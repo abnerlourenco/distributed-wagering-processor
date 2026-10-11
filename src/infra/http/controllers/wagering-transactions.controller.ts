@@ -9,10 +9,13 @@ import {
 import type { Response } from 'express';
 import { z } from 'zod';
 import { Money } from '../../../core/domain/money.js';
-import { WagerTransactionStatus } from '../../../domain/wagering/enterprise/entities/wager-transaction.js';
-import { ProcessBetUseCase } from '../../../domain/wagering/application/use-cases/process-bet.js';
+import {
+  WagerTransactionKind,
+  WagerTransactionStatus,
+} from '../../../domain/wagering/enterprise/entities/wager-transaction.js';
+import { ProcessWagerTransactionUseCase } from '../../../domain/wagering/application/use-cases/process-wager-transaction.js';
 
-const submitBetBodySchema = z
+const submitWagerTransactionBodySchema = z
   .object({
     providerId: z.string().trim().min(1).max(255),
     externalTransactionId: z.string().trim().min(1).max(255),
@@ -20,11 +23,16 @@ const submitBetBodySchema = z
     walletId: z.uuid(),
     roundId: z.string().trim().min(1).max(255),
     gameId: z.string().trim().min(1).max(255),
-    kind: z.literal('BET'),
+    kind: z.enum([
+      WagerTransactionKind.Bet,
+      WagerTransactionKind.Win,
+      WagerTransactionKind.Loss,
+    ]),
     money: z.object({
       amount: z.string().regex(/^\d{1,18}\.\d{2}$/),
       currency: z.string().regex(/^[A-Z]{3}$/),
     }).strict(),
+    referenceExternalTransactionId: z.string().trim().min(1).max(255).optional(),
   })
   .strict();
 
@@ -32,7 +40,9 @@ const idempotencyKeySchema = z.string().trim().min(1).max(255);
 
 @Controller('wagering/transactions')
 export class WageringTransactionsController {
-  constructor(private readonly processBet: ProcessBetUseCase) {}
+  constructor(
+    private readonly processTransaction: ProcessWagerTransactionUseCase,
+  ) {}
 
   @Post()
   @HttpCode(200)
@@ -41,9 +51,9 @@ export class WageringTransactionsController {
     @Body() body: unknown,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const request = submitBetBodySchema.parse(body);
+    const request = submitWagerTransactionBodySchema.parse(body);
     const key = idempotencyKeySchema.parse(idempotencyKey);
-    const result = await this.processBet.execute({
+    const result = await this.processTransaction.execute({
       ...request,
       idempotencyKey: key,
       money: Money.from(request.money),
@@ -51,6 +61,10 @@ export class WageringTransactionsController {
 
     if (result.transaction.status === WagerTransactionStatus.Rejected) {
       response.status(422);
+    } else if (
+      result.transaction.status === WagerTransactionStatus.PendingReference
+    ) {
+      response.status(202);
     }
 
     return {

@@ -14,6 +14,7 @@ import type {
 import {
   WagerTransaction,
   WagerTransactionKind,
+  WagerTransactionStatus,
 } from '../../../../domain/wagering/enterprise/entities/wager-transaction.js';
 import { InsufficientWalletBalanceError } from '../../../../domain/wallets/enterprise/errors/insufficient-wallet-balance-error.js';
 import {
@@ -32,13 +33,9 @@ export class MikroOrmProcessWagerTransactionsRepository
 {
   constructor(private readonly entityManager: EntityManager) {}
 
-  async processBet(
+  async process(
     transaction: WagerTransaction,
   ): Promise<ProcessWagerTransactionResult> {
-    if (transaction.kind !== WagerTransactionKind.Bet) {
-      throw new DomainError('This repository only processes BET transactions');
-    }
-
     try {
       return await this.entityManager.transactional(async (entityManager) => {
         const existing = await entityManager.findOne(WagerTransactionEntity, {
@@ -98,29 +95,93 @@ export class MikroOrmProcessWagerTransactionsRepository
         });
 
         let ledgerEntry: WalletLedgerEntry | undefined;
-        let resultBalance = wallet.balance;
-        try {
-          wallet.debit(transaction.money);
-          resultBalance = wallet.balance;
-          const processedAt = new Date();
-          transaction.markProcessed(undefined, processedAt);
-          ledgerEntry = WalletLedgerEntry.create({
-            walletId: wallet.id,
-            transactionId: transaction.id,
-            direction: LedgerDirection.Debit,
-            money: transaction.money,
-            balanceBefore: walletEntityBalance(walletEntity),
-            balanceAfter: resultBalance,
-            createdAt: processedAt,
-          });
-        } catch (error) {
-          if (!(error instanceof InsufficientWalletBalanceError)) {
-            throw error;
-          }
+        const balanceBefore = wallet.balance;
+        let referenceTransactionId: string | undefined;
+        let rejected = false;
+        const processedReference =
+          transaction.kind === WagerTransactionKind.Win &&
+          transaction.referenceExternalTransactionId
+            ? await entityManager.findOne(WagerTransactionEntity, {
+                providerId: transaction.providerId,
+                externalTransactionId:
+                  transaction.referenceExternalTransactionId,
+              })
+            : null;
 
-          transaction.reject('INSUFFICIENT_FUNDS');
+        if (
+          transaction.kind === WagerTransactionKind.Win &&
+          transaction.referenceExternalTransactionId
+        ) {
+          if (
+            !processedReference ||
+            processedReference.status === WagerTransactionStatus.Pending ||
+            processedReference.status === WagerTransactionStatus.PendingReference
+          ) {
+            transaction.markPendingReference();
+          } else if (
+            processedReference.status !== WagerTransactionStatus.Processed
+          ) {
+            transaction.reject('INVALID_REFERENCE');
+          } else if (
+            processedReference.kind !== WagerTransactionKind.Bet ||
+            processedReference.walletId !== transaction.walletId ||
+            processedReference.playerId !== transaction.playerId ||
+            processedReference.roundId !== transaction.roundId ||
+            processedReference.currency !== transaction.money.currency
+          ) {
+            transaction.reject('INVALID_REFERENCE');
+          } else {
+            referenceTransactionId = processedReference.id;
+          }
         }
 
+        if (
+          transaction.status !== WagerTransactionStatus.PendingReference &&
+          transaction.status !== WagerTransactionStatus.Rejected
+        ) {
+          const processedAt = new Date();
+          if (transaction.kind === WagerTransactionKind.Bet) {
+            try {
+              wallet.debit(transaction.money);
+            } catch (error) {
+              if (!(error instanceof InsufficientWalletBalanceError)) {
+                throw error;
+              }
+
+              transaction.reject('INSUFFICIENT_FUNDS');
+              rejected = true;
+            }
+          } else if (transaction.kind === WagerTransactionKind.Win) {
+            wallet.credit(transaction.money);
+          }
+
+          if (!rejected) {
+            transaction.markProcessed(referenceTransactionId, processedAt);
+            if (transaction.kind === WagerTransactionKind.Bet) {
+              ledgerEntry = WalletLedgerEntry.create({
+                walletId: wallet.id,
+                transactionId: transaction.id,
+                direction: LedgerDirection.Debit,
+                money: transaction.money,
+                balanceBefore,
+                balanceAfter: wallet.balance,
+                createdAt: processedAt,
+              });
+            } else if (transaction.kind === WagerTransactionKind.Win) {
+              ledgerEntry = WalletLedgerEntry.create({
+                walletId: wallet.id,
+                transactionId: transaction.id,
+                direction: LedgerDirection.Credit,
+                money: transaction.money,
+                balanceBefore,
+                balanceAfter: wallet.balance,
+                createdAt: processedAt,
+              });
+            }
+          }
+        }
+
+        const resultBalance = wallet.balance;
         const transactionEntity = entityManager.create(WagerTransactionEntity, {
           id: transaction.id,
           providerId: transaction.providerId,
@@ -134,6 +195,9 @@ export class MikroOrmProcessWagerTransactionsRepository
           kind: transaction.kind,
           amount: transaction.money.toString(),
           currency: transaction.money.currency,
+          referenceExternalTransactionId:
+            transaction.referenceExternalTransactionId,
+          referenceTransactionId,
           status: transaction.status,
           failureCode: transaction.failureCode,
           resultingBalance: resultBalance.toString(),
@@ -170,7 +234,11 @@ export class MikroOrmProcessWagerTransactionsRepository
           await entityManager.flush();
         }
 
-        return { transaction, balance: resultBalance, idempotentReplay: false };
+        return {
+        transaction,
+        balance: resultBalance,
+        idempotentReplay: false,
+        };
       });
     } catch (error) {
       if (!(error instanceof UniqueConstraintViolationException)) {
@@ -225,8 +293,4 @@ export class MikroOrmProcessWagerTransactionsRepository
       idempotentReplay: true,
     };
   }
-}
-
-function walletEntityBalance(wallet: WalletEntity): Money {
-  return Money.from({ amount: wallet.balance, currency: wallet.currency });
 }

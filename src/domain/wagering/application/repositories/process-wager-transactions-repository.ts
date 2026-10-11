@@ -8,7 +8,7 @@ export interface ProcessWagerTransactionResult {
 }
 
 export interface ProcessWagerTransactionsRepository {
-  processBet(
+  process(
     transaction: WagerTransaction,
   ): Promise<ProcessWagerTransactionResult>;
 }

@@ -16,6 +16,7 @@ import { MikroOrmWalletLedgerEntriesRepository } from '../src/infra/database/mik
 import { MikroOrmProcessWagerTransactionsRepository } from '../src/infra/database/mikro-orm/repositories/mikro-orm-process-wager-transactions.repository.js';
 import { MikroOrmWalletsRepository } from '../src/infra/database/mikro-orm/repositories/mikro-orm-wallets.repository.js';
 import { ProcessBetUseCase } from '../src/domain/wagering/application/use-cases/process-bet.js';
+import { ProcessWagerTransactionUseCase } from '../src/domain/wagering/application/use-cases/process-wager-transaction.js';
 import { IdempotencyConflictError } from '../src/domain/wagering/application/errors/idempotency-conflict-error.js';
 
 const testDatabaseUrl = process.env.POSTGRES_TEST_DATABASE_URL;
@@ -126,6 +127,7 @@ describe('PostgreSQL migrations and integrity constraints', () => {
       where conname in (
         'wallets_balance_non_negative',
         'wager_transactions_provider_idempotency_key_unique',
+        'wager_transactions_resulting_balance_non_negative',
         'wallet_ledger_entries_balance_consistent',
         'inbox_messages_consumer_source_message_unique',
         'outbox_messages_deduplication_key_unique'
@@ -136,6 +138,7 @@ describe('PostgreSQL migrations and integrity constraints', () => {
       'inbox_messages_consumer_source_message_unique',
       'outbox_messages_deduplication_key_unique',
       'wager_transactions_provider_idempotency_key_unique',
+      'wager_transactions_resulting_balance_non_negative',
       'wallet_ledger_entries_balance_consistent',
       'wallets_balance_non_negative',
     ]);
@@ -273,6 +276,173 @@ describe('PostgreSQL migrations and integrity constraints', () => {
         balance_after: '75.00',
       },
     ]);
+  });
+
+  it('credits WIN atomically when its referenced BET has already been processed', async () => {
+    const wallet = await insertWallet({ balance: '75.00' });
+    const repository = new MikroOrmProcessWagerTransactionsRepository(
+      orm.em.fork({ clear: true }),
+    );
+    const bet = await new ProcessBetUseCase(repository).execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'win-reference-bet',
+      idempotencyKey: 'provider-a:win-reference-bet',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    });
+    const win = await new ProcessWagerTransactionUseCase(repository).execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'win-reference-win',
+      idempotencyKey: 'provider-a:win-reference-win',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      kind: WagerTransactionKind.Win,
+      referenceExternalTransactionId: 'win-reference-bet',
+      money: Money.from({ amount: '50.00', currency: 'BRL' }),
+    });
+
+    expect(win.transaction.status).toBe('PROCESSED');
+    expect(win.transaction.referenceTransactionId).toBe(bet.transaction.id);
+    expect(win.balance.toString()).toBe('100.00');
+    expect(
+      await execute(
+        'select "balance", "version" from "wallets" where "id" = ?',
+        [wallet.id],
+      ),
+    ).toEqual([{ balance: '100.00', version: 3 }]);
+    expect(
+      await execute(
+        `select "direction", "amount", "balance_before", "balance_after"
+         from "wallet_ledger_entries" where "transaction_id" = ?`,
+        [win.transaction.id],
+      ),
+    ).toEqual([
+      {
+        direction: 'CREDIT',
+        amount: '50.00',
+        balance_before: '50.00',
+        balance_after: '100.00',
+      },
+    ]);
+  });
+
+  it('processes LOSS without changing the wallet or creating a ledger entry', async () => {
+    const wallet = await insertWallet({ balance: '75.00' });
+    const result = await new ProcessWagerTransactionUseCase(
+      new MikroOrmProcessWagerTransactionsRepository(
+        orm.em.fork({ clear: true }),
+      ),
+    ).execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'loss-no-balance',
+      idempotencyKey: 'provider-a:loss-no-balance',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      kind: WagerTransactionKind.Loss,
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    });
+
+    expect(result.transaction.status).toBe('PROCESSED');
+    expect(result.balance.toString()).toBe('75.00');
+    expect(
+      await execute(
+        'select "balance", "version" from "wallets" where "id" = ?',
+        [wallet.id],
+      ),
+    ).toEqual([{ balance: '75.00', version: 1 }]);
+    expect(
+      await execute(
+        'select count(*)::int as "count" from "wallet_ledger_entries" where "wallet_id" = ?',
+        [wallet.id],
+      ),
+    ).toEqual([{ count: 0 }]);
+  });
+
+  it('stores a WIN with a missing BET reference as pending without crediting the wallet', async () => {
+    const wallet = await insertWallet({ balance: '75.00' });
+    const result = await new ProcessWagerTransactionUseCase(
+      new MikroOrmProcessWagerTransactionsRepository(
+        orm.em.fork({ clear: true }),
+      ),
+    ).execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'win-pending-reference',
+      idempotencyKey: 'provider-a:win-pending-reference',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      kind: WagerTransactionKind.Win,
+      referenceExternalTransactionId: 'missing-bet',
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    });
+
+    expect(result.transaction.status).toBe('PENDING_REFERENCE');
+    expect(result.balance.toString()).toBe('75.00');
+    expect(
+      await execute(
+        'select "balance", "version" from "wallets" where "id" = ?',
+        [wallet.id],
+      ),
+    ).toEqual([{ balance: '75.00', version: 1 }]);
+    expect(
+      await execute(
+        'select count(*)::int as "count" from "wallet_ledger_entries" where "wallet_id" = ?',
+        [wallet.id],
+      ),
+    ).toEqual([{ count: 0 }]);
+  });
+
+  it('rejects a WIN referencing a BET from a different round without crediting', async () => {
+    const wallet = await insertWallet({ balance: '75.00' });
+    const repository = new MikroOrmProcessWagerTransactionsRepository(
+      orm.em.fork({ clear: true }),
+    );
+    await new ProcessBetUseCase(repository).execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'invalid-win-reference-bet',
+      idempotencyKey: 'provider-a:invalid-win-reference-bet',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    });
+    const result = await new ProcessWagerTransactionUseCase(repository).execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'invalid-win-reference',
+      idempotencyKey: 'provider-a:invalid-win-reference',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-2',
+      gameId: 'game-1',
+      kind: WagerTransactionKind.Win,
+      referenceExternalTransactionId: 'invalid-win-reference-bet',
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    });
+
+    expect(result.transaction.status).toBe('REJECTED');
+    expect(result.transaction.failureCode).toBe('INVALID_REFERENCE');
+    expect(result.balance.toString()).toBe('50.00');
+    expect(
+      await execute(
+        'select "balance", "version" from "wallets" where "id" = ?',
+        [wallet.id],
+      ),
+    ).toEqual([{ balance: '50.00', version: 2 }]);
+    expect(
+      await execute(
+        'select count(*)::int as "count" from "wallet_ledger_entries" where "wallet_id" = ?',
+        [wallet.id],
+      ),
+    ).toEqual([{ count: 1 }]);
   });
 
   it('audits an insufficient-funds BET without changing the wallet or ledger', async () => {

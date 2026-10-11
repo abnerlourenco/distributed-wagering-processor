@@ -8,7 +8,7 @@ describe('ProcessBetUseCase', () => {
   it('creates a BET with a deterministic business payload hash', async () => {
     const requests: string[] = [];
     const repository: ProcessWagerTransactionsRepository = {
-      async processBet(transaction) {
+      async process(transaction) {
         requests.push(transaction.payloadHash);
         return {
           transaction,
@@ -40,7 +40,7 @@ describe('ProcessBetUseCase', () => {
   it('changes the payload hash when the business amount changes', async () => {
     const hashes: string[] = [];
     const useCase = new ProcessBetUseCase({
-      async processBet(transaction) {
+      async process(transaction) {
         hashes.push(transaction.payloadHash);
         return {
           transaction,

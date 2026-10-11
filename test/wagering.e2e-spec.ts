@@ -9,8 +9,11 @@ import type {
   ProcessWagerTransactionResult,
   ProcessWagerTransactionsRepository,
 } from '../src/domain/wagering/application/repositories/process-wager-transactions-repository.js';
-import { ProcessBetUseCase } from '../src/domain/wagering/application/use-cases/process-bet.js';
-import { WagerTransaction } from '../src/domain/wagering/enterprise/entities/wager-transaction.js';
+import { ProcessWagerTransactionUseCase } from '../src/domain/wagering/application/use-cases/process-wager-transaction.js';
+import {
+  WagerTransaction,
+  WagerTransactionKind,
+} from '../src/domain/wagering/enterprise/entities/wager-transaction.js';
 import { HttpExceptionFilter } from '../src/infra/http/filters/http-exception.filter.js';
 import { WageringTransactionsController } from '../src/infra/http/controllers/wagering-transactions.controller.js';
 
@@ -22,7 +25,7 @@ class InMemoryProcessWagerTransactionsRepository
     ProcessWagerTransactionResult
   >();
 
-  async processBet(
+  async process(
     transaction: WagerTransaction,
   ): Promise<ProcessWagerTransactionResult> {
     const key = `${transaction.providerId}:${transaction.idempotencyKey}`;
@@ -36,7 +39,25 @@ class InMemoryProcessWagerTransactionsRepository
       return { ...existing, idempotentReplay: true };
     }
 
-    if (transaction.money.toString() === '50.00') {
+    if (
+      transaction.kind === WagerTransactionKind.Win &&
+      transaction.referenceExternalTransactionId
+    ) {
+      transaction.markPendingReference();
+      const result = {
+        transaction,
+        balance: Money.from({ amount: '975.00', currency: 'BRL' }),
+        idempotentReplay: false,
+      };
+      this.transactions.set(key, result);
+
+      return result;
+    }
+
+    if (
+      transaction.kind === WagerTransactionKind.Bet &&
+      transaction.money.toString() === '50.00'
+    ) {
       transaction.reject('INSUFFICIENT_FUNDS');
       const result = {
         transaction,
@@ -51,7 +72,12 @@ class InMemoryProcessWagerTransactionsRepository
     transaction.markProcessed(undefined, new Date());
     const result = {
       transaction,
-      balance: Money.from({ amount: '975.00', currency: 'BRL' }),
+      balance:
+        transaction.kind === WagerTransactionKind.Bet
+          ? Money.from({ amount: '975.00', currency: 'BRL' })
+          : transaction.kind === WagerTransactionKind.Loss
+            ? Money.from({ amount: '1000.00', currency: 'BRL' })
+            : Money.from({ amount: '1025.00', currency: 'BRL' }),
       idempotentReplay: false,
     };
     this.transactions.set(key, result);
@@ -69,8 +95,8 @@ describe('Wagering transactions HTTP (e2e)', () => {
       controllers: [WageringTransactionsController],
       providers: [
         {
-          provide: ProcessBetUseCase,
-          useFactory: () => new ProcessBetUseCase(repository),
+          provide: ProcessWagerTransactionUseCase,
+          useFactory: () => new ProcessWagerTransactionUseCase(repository),
         },
       ],
     }).compile();
@@ -128,7 +154,7 @@ describe('Wagering transactions HTTP (e2e)', () => {
       .expect(409);
   });
 
-  it('requires an idempotency key and accepts only valid BET payloads', async () => {
+  it('requires an idempotency key and rejects unsupported transaction kinds', async () => {
     const body = {
       providerId: 'provider-a',
       externalTransactionId: 'transaction-123',
@@ -148,8 +174,70 @@ describe('Wagering transactions HTTP (e2e)', () => {
     await request(app.getHttpServer())
       .post('/wagering/transactions')
       .set('Idempotency-Key', 'provider-a:transaction-123')
-      .send({ ...body, kind: 'WIN' })
+      .send({ ...body, kind: 'ROLLBACK' })
       .expect(400);
+  });
+
+  it('processes WIN and LOSS and leaves referenced WIN pending when its BET is absent', async () => {
+    const common = {
+      providerId: 'provider-a',
+      playerId: randomUUID(),
+      walletId: randomUUID(),
+      roundId: 'round-987',
+      gameId: 'fortune-chimp',
+      money: { amount: '25.00', currency: 'BRL' },
+    };
+
+    await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', 'provider-a:win-1')
+      .send({
+        ...common,
+        externalTransactionId: 'win-1',
+        kind: 'WIN',
+      })
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body).toMatchObject({
+          status: 'PROCESSED',
+          balance: { amount: '1025.00', currency: 'BRL' },
+          idempotentReplay: false,
+        });
+      });
+
+    await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', 'provider-a:loss-1')
+      .send({
+        ...common,
+        externalTransactionId: 'loss-1',
+        kind: 'LOSS',
+      })
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body).toMatchObject({
+          status: 'PROCESSED',
+          balance: { amount: '1000.00', currency: 'BRL' },
+        });
+      });
+
+    await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', 'provider-a:win-pending')
+      .send({
+        ...common,
+        externalTransactionId: 'win-pending',
+        kind: 'WIN',
+        referenceExternalTransactionId: 'bet-not-yet-received',
+      })
+      .expect(202)
+      .expect(({ body }) => {
+        expect(body).toMatchObject({
+          status: 'PENDING_REFERENCE',
+          balance: { amount: '975.00', currency: 'BRL' },
+          idempotentReplay: false,
+        });
+      });
   });
 
   it('returns an explicit business rejection for insufficient funds', async () => {
