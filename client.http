@@ -1,0 +1,13 @@
+@baseUrl = http://localhost:3000
+
+### Create a wallet with an initial balance
+POST {{baseUrl}}/wallets
+Content-Type: application/json
+
+{
+  "playerId": "d0c4be2c-e53d-44df-9724-e0d5d5172d0b",
+  "initialBalance": {
+    "amount": "1000.00",
+    "currency": "BRL"
+  }
+}

@@ -1,10 +1,14 @@
 import { Body, Controller, HttpCode, Post } from '@nestjs/common';
 import { z } from 'zod';
+import { Money } from '../../../core/domain/money.js';
 import { OpenWalletUseCase } from '../../../domain/wallets/application/use-cases/open-wallet.js';
 
 const openWalletBodySchema = z.object({
   playerId: z.uuid(),
-  currency: z.string().regex(/^[A-Z]{3}$/),
+  initialBalance: z.object({
+    amount: z.string().regex(/^\d{1,18}\.\d{2}$/),
+    currency: z.string().regex(/^[A-Z]{3}$/),
+  }),
 });
 
 @Controller('wallets')
@@ -15,7 +19,10 @@ export class WalletsController {
   @HttpCode(201)
   async create(@Body() body: unknown) {
     const request = openWalletBodySchema.parse(body);
-    const { wallet } = await this.openWallet.execute(request);
+    const { wallet } = await this.openWallet.execute({
+      playerId: request.playerId,
+      initialBalance: Money.from(request.initialBalance),
+    });
 
     return {
       id: wallet.id,

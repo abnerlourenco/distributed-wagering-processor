@@ -23,12 +23,20 @@ export class Wallet {
     private _updatedAt: Date,
   ) {}
 
-  static open(props: { id?: string; playerId: string; currency: string }): Wallet {
+  static open(props: {
+    id?: string;
+    playerId: string;
+    initialBalance: Money;
+  }): Wallet {
     if (!props.playerId) {
       throw new DomainError('Wallet player id is required');
     }
 
-    const balance = Money.zero(props.currency);
+    if (props.initialBalance.isNegative()) {
+      throw new DomainError('Wallet initial balance cannot be negative');
+    }
+
+    const balance = props.initialBalance;
     const now = new Date();
 
     return new Wallet(
@@ -98,7 +106,9 @@ export class Wallet {
 
   private assertSameCurrency(money: Money): void {
     if (this.currency !== money.currency) {
-      throw new DomainError('Wallet operation currency must match wallet currency');
+      throw new DomainError(
+        'Wallet operation currency must match wallet currency',
+      );
     }
   }
 }

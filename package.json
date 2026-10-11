@@ -21,7 +21,10 @@
     "test:debug": "vitest --inspect-brk --no-file-parallelism",
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
     "pretest:integration": "bun run build",
-    "test:integration": "vitest run --config ./vitest.config.e2e.ts test/database-integrity.postgres.e2e-spec.ts"
+    "test:integration": "vitest run --config ./vitest.config.e2e.ts test/database-integrity.postgres.e2e-spec.ts",
+    "migration:create": "bun run build && bunx mikro-orm migration:create --blank --path src/infra/database/migrations --config dist/infra/database/mikro-orm.config.js",
+    "migration:up": "bun run build && bunx mikro-orm migration:up --config dist/infra/database/mikro-orm.config.js",
+    "migration:down": "bun run build && bunx mikro-orm migration:down --config dist/infra/database/mikro-orm.config.js"
   },
   "dependencies": {
     "@mikro-orm/cli": "^7.2.5",

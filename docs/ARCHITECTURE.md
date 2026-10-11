@@ -41,11 +41,11 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 
 ## Módulo Wallets
 
-- `Wallet` é o aggregate root. Ele abre com saldo `0.00`, moeda definida e versão `1`; estado e transições permanecem encapsulados.
+- `Wallet` é o aggregate root. Ele abre com saldo inicial não negativo, moeda definida e versão `1`; estado e transições permanecem encapsulados.
 - `Wallet.open()` cria um aggregate novo; `Wallet.rehydrate()` reconstrói o estado persistido sem reexecutar regras de transição.
-- `OpenWalletUseCase` cria uma carteira por jogador/moeda e depende apenas de `WalletsRepository`.
-- `MikroOrmWalletsRepository` adapta esse contrato ao PostgreSQL e converte violações da constraint de unicidade em erro de domínio.
-- `POST /wallets` valida `playerId` UUID e moeda ISO de três letras com Zod. A resposta expõe valores monetários como strings.
+- `OpenWalletUseCase` cria uma carteira por jogador/moeda e depende apenas de `WalletsRepository`. Para saldo inicial positivo, também cria uma `WagerTransaction` interna `OPENING` processada e uma entrada `CREDIT` no ledger; saldo zero não gera esses registros.
+- `MikroOrmWalletsRepository` grava carteira, operação `OPENING` e lançamento de ledger em uma única transação PostgreSQL, e converte conflitos da carteira por jogador/moeda em erro de domínio.
+- `POST /wallets` recebe `playerId` UUID e `initialBalance` como objeto com `amount` decimal string e moeda ISO de três letras. A resposta expõe valores monetários como strings.
 - O aggregate já protege moeda e saldo insuficiente em memória. Endpoints de crédito e débito só serão expostos junto ao ledger e à transação PostgreSQL que confirme alteração de saldo e lançamento de forma atômica.
 
 ## Persistência de operações de aposta
@@ -93,6 +93,7 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 - A configuração de migrations está centralizada em `src/infra/database/mikro-orm.config.ts`, com saídas compiladas em `dist/infra/database/migrations`.
 - Não há sincronização automática de schema. Toda mudança futura de banco deverá ser entregue como migration versionada e reversível quando tecnicamente possível.
 - Constraints e índices definidos nas migrations não estão todos espelhados nos metadados das entidades; não executar `schema:update`, pois ele pode propor remover essas proteções. Alterações de schema devem usar migrations revisadas.
+- `bun run migration:create -- --name=descricao_curta` compila a aplicação e cria uma migration em branco em `src/infra/database/migrations`; preencher manualmente `up()` e `down()` antes de aplicar. `bun run migration:up` aplica pendências e `bun run migration:down` reverte a última migration, sempre após compilar o projeto.
 - `Money` é um value object de domínio imutável, implementado com `decimal.js`; não possui tabela própria. Valores entram e saem da aplicação como strings decimais com duas casas e são persistidos em colunas `NUMERIC(20,2)`.
 - A primeira migration cria a tabela `wallets`. Ela armazena UUIDs de carteira e jogador, a moeda como código ISO 4217 de três letras, o saldo materializado como `NUMERIC(20,2)`, `version` para controle otimista e timestamps de criação e atualização. O banco impede saldo negativo, versão inválida e duplicidade de carteira por par `(player_id, currency)`.
 - `wallets.player_id` ainda não possui chave estrangeira porque o módulo/tabela de jogadores não existe. A migration que introduzir jogadores deverá criar a FK sem invalidar dados existentes.

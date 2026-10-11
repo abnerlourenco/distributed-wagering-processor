@@ -1,9 +1,23 @@
 import { randomUUID } from 'node:crypto';
 import { MikroORM } from '@mikro-orm/postgresql';
+import { Money } from '../src/core/domain/money.js';
+import { OpenWalletUseCase } from '../src/domain/wallets/application/use-cases/open-wallet.js';
+import {
+  LedgerDirection,
+  WalletLedgerEntry,
+} from '../src/domain/wallets/enterprise/entities/wallet-ledger-entry.js';
+import { Wallet } from '../src/domain/wallets/enterprise/entities/wallet.js';
+import {
+  WagerTransaction,
+  WagerTransactionKind,
+} from '../src/domain/wagering/enterprise/entities/wager-transaction.js';
 import { mikroOrmConfig } from '../src/infra/database/mikro-orm.config.js';
+import { MikroOrmWalletsRepository } from '../src/infra/database/mikro-orm/repositories/mikro-orm-wallets.repository.js';
 
 const testDatabaseUrl = process.env.POSTGRES_TEST_DATABASE_URL;
-const testDatabaseName = testDatabaseUrl ? new URL(testDatabaseUrl).pathname.slice(1) : '';
+const testDatabaseName = testDatabaseUrl
+  ? new URL(testDatabaseUrl).pathname.slice(1)
+  : '';
 
 if (!testDatabaseUrl || !/(^|[-_])test$/i.test(testDatabaseName)) {
   throw new Error(
@@ -14,16 +28,21 @@ if (!testDatabaseUrl || !/(^|[-_])test$/i.test(testDatabaseName)) {
 describe('PostgreSQL migrations and integrity constraints', () => {
   let orm: MikroORM;
 
-  async function execute(sql: string, params: unknown[] = []): Promise<unknown> {
+  async function execute(
+    sql: string,
+    params: unknown[] = [],
+  ): Promise<unknown> {
     return orm.em.getConnection().execute(sql, params);
   }
 
-  async function insertWallet(props: {
-    id?: string;
-    playerId?: string;
-    currency?: string;
-    balance?: string;
-  } = {}): Promise<{ id: string; playerId: string }> {
+  async function insertWallet(
+    props: {
+      id?: string;
+      playerId?: string;
+      currency?: string;
+      balance?: string;
+    } = {},
+  ): Promise<{ id: string; playerId: string }> {
     const id = props.id ?? randomUUID();
     const playerId = props.playerId ?? randomUUID();
 
@@ -129,6 +148,124 @@ describe('PostgreSQL migrations and integrity constraints', () => {
     ).rejects.toThrow();
 
     await expect(insertWallet({ playerId: wallet.playerId })).rejects.toThrow();
+  });
+
+  it('persists positive initial balance with a processed OPENING transaction and credit ledger atomically', async () => {
+    const initialBalance = Money.from({ amount: '250.00', currency: 'BRL' });
+    const { wallet } = await new OpenWalletUseCase(
+      new MikroOrmWalletsRepository(orm.em.fork({ clear: true })),
+    ).execute({
+      playerId: randomUUID(),
+      initialBalance,
+    });
+
+    expect(wallet.balance.toJSON()).toEqual({
+      amount: '250.00',
+      currency: 'BRL',
+    });
+    expect(wallet.version).toBe(1);
+
+    const transactions = (await execute(
+      `select "kind", "status", "amount", "currency", "processed_at"
+       from "wager_transactions" where "wallet_id" = ?`,
+      [wallet.id],
+    )) as Array<Record<string, string | null>>;
+    const ledgerEntries = (await execute(
+      `select "direction", "amount", "currency", "balance_before", "balance_after"
+       from "wallet_ledger_entries" where "wallet_id" = ?`,
+      [wallet.id],
+    )) as Array<Record<string, string>>;
+    const persistedWallets = (await execute(
+      'select "balance", "version" from "wallets" where "id" = ?',
+      [wallet.id],
+    )) as Array<{ balance: string; version: number }>;
+
+    expect(transactions).toHaveLength(1);
+    expect(transactions[0]).toMatchObject({
+      kind: 'OPENING',
+      status: 'PROCESSED',
+      amount: '250.00',
+      currency: 'BRL',
+    });
+    expect(transactions[0].processed_at).not.toBeNull();
+    expect(ledgerEntries).toEqual([
+      {
+        direction: 'CREDIT',
+        amount: '250.00',
+        currency: 'BRL',
+        balance_before: '0.00',
+        balance_after: '250.00',
+      },
+    ]);
+    expect(persistedWallets).toEqual([{ balance: '250.00', version: 1 }]);
+  });
+
+  it('creates a zero-balance wallet without an OPENING transaction or ledger entry', async () => {
+    const { wallet } = await new OpenWalletUseCase(
+      new MikroOrmWalletsRepository(orm.em.fork({ clear: true })),
+    ).execute({
+      playerId: randomUUID(),
+      initialBalance: Money.zero('BRL'),
+    });
+
+    expect(wallet.balance.toJSON()).toEqual({
+      amount: '0.00',
+      currency: 'BRL',
+    });
+
+    const counts = (await execute(
+      `select
+        (select count(*) from "wager_transactions" where "wallet_id" = ?) as transactions,
+        (select count(*) from "wallet_ledger_entries" where "wallet_id" = ?) as entries`,
+      [wallet.id, wallet.id],
+    )) as Array<{ transactions: string; entries: string }>;
+
+    expect(Object.values(counts[0]).map(Number)).toEqual([0, 0]);
+  });
+
+  it('rolls back a wallet and its OPENING transaction if the opening ledger entry fails', async () => {
+    const initialBalance = Money.from({ amount: '25.00', currency: 'BRL' });
+    const wallet = Wallet.open({ playerId: randomUUID(), initialBalance });
+    const transaction = WagerTransaction.create({
+      providerId: 'internal',
+      externalTransactionId: `wallet-opening:${wallet.id}`,
+      idempotencyKey: `wallet-opening:${wallet.id}`,
+      payloadHash: 'opening-payload-hash',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'wallet-opening',
+      gameId: 'internal',
+      kind: WagerTransactionKind.Opening,
+      money: initialBalance,
+    });
+    transaction.markProcessed(undefined, transaction.createdAt);
+    const invalidLedgerEntry = WalletLedgerEntry.rehydrate({
+      id: randomUUID(),
+      walletId: wallet.id,
+      transactionId: transaction.id,
+      direction: LedgerDirection.Credit,
+      money: initialBalance,
+      balanceBefore: Money.zero('BRL'),
+      balanceAfter: Money.from({ amount: '30.00', currency: 'BRL' }),
+      createdAt: transaction.createdAt,
+    });
+
+    await expect(
+      new MikroOrmWalletsRepository(orm.em).create(wallet, {
+        transaction,
+        ledgerEntry: invalidLedgerEntry,
+      }),
+    ).rejects.toThrow();
+
+    const rows = (await execute(
+      `select
+        (select count(*) from "wallets" where "id" = ?) as wallets,
+        (select count(*) from "wager_transactions" where "id" = ?) as transactions,
+        (select count(*) from "wallet_ledger_entries" where "transaction_id" = ?) as entries`,
+      [wallet.id, transaction.id, transaction.id],
+    )) as Array<{ wallets: string; transactions: string; entries: string }>;
+
+    expect(Object.values(rows[0]).map(Number)).toEqual([0, 0, 0]);
   });
 
   it('enforces wager references and provider-scoped idempotency', async () => {
@@ -270,7 +407,13 @@ describe('PostgreSQL migrations and integrity constraints', () => {
             "payload_hash", "wallet_id", "player_id", "round_id", "game_id",
             "kind", "amount", "currency", "status"
           ) values (?, 'integration-provider', ?, ?, 'payload-hash', ?, ?, 'round-1', 'game-1', 'BET', 25.00, 'BRL', 'PENDING')`,
-          [wager.id, wager.externalTransactionId, wager.idempotencyKey, wallet.id, wallet.playerId],
+          [
+            wager.id,
+            wager.externalTransactionId,
+            wager.idempotencyKey,
+            wallet.id,
+            wallet.playerId,
+          ],
         );
         await transaction(
           `insert into "wallet_ledger_entries" (
@@ -296,14 +439,17 @@ describe('PostgreSQL migrations and integrity constraints', () => {
       }),
     ).rejects.toThrow('force transaction rollback');
 
-    const rows = (await execute(`
+    const rows = (await execute(
+      `
       select
         (select count(*) from "wallets" where "id" = ?) as wallets,
         (select count(*) from "wager_transactions" where "id" = ?) as wager_transactions,
         (select count(*) from "wallet_ledger_entries" where "transaction_id" = ?) as ledger_entries,
         (select count(*) from "inbox_messages" where "message_id" = ?) as inbox_messages,
         (select count(*) from "outbox_messages" where "aggregate_id" = ?) as outbox_messages
-    `, [wallet.id, wager.id, wager.id, 'message-rollback', wager.id])) as Array<Record<string, string>>;
+    `,
+      [wallet.id, wager.id, wager.id, 'message-rollback', wager.id],
+    )) as Array<Record<string, string>>;
 
     expect(Object.values(rows[0]).map(Number)).toEqual([0, 0, 0, 0, 0]);
   });
