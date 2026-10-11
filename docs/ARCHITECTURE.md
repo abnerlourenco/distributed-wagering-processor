@@ -57,6 +57,14 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 - `SubmitWagerTransactionUseCase` persiste novas operações como `PENDING`; replay da mesma chave e hash retorna o registro original, enquanto conflito de hash ou duplicidade do identificador externo é rejeitado. A constraint única do banco arbitra corridas entre instâncias; o repositório retorna o registro vencedor para que o caso de uso aplique a mesma regra de replay/conflito.
 - Nesta etapa, receber/submeter a transação não altera saldo nem grava ledger. Isso será responsabilidade do caso de uso de processamento, com transação PostgreSQL atômica.
 
+## Ledger de carteira
+
+- `WalletLedgerEntry` é um registro imutável associado a uma carteira e a uma `WagerTransaction`; cada operação gera no máximo um lançamento por carteira.
+- `DEBIT` e `CREDIT` armazenam valor e saldos anterior/posterior como `NUMERIC(20,2)`. A factory valida moeda, valor positivo, saldo não negativo e igualdade aritmética entre direção, valor e saldos.
+- A tabela `wallet_ledger_entries` tem FKs compostas para garantir que carteira, transação e moeda correspondam, além de constraints SQL para direção, saldo e aritmética do lançamento.
+- Correções devem ocorrer por novos lançamentos compensatórios, nunca por alteração ou exclusão dos existentes.
+- A persistência do ledger ainda não foi conectada ao processamento financeiro. Quando implementado, inserir lançamento, atualizar carteira e marcar a transação como processada deverá ocorrer na mesma transação PostgreSQL.
+
 ## Decisões tomadas
 
 1- Foi realizada a decisão de utilizar o MikroORM para mapeamento do banco de dados postgres.

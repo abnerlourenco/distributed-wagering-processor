@@ -4,11 +4,12 @@ import { ReflectMetadataProvider } from '@mikro-orm/decorators/legacy';
 import { resolvedDatabaseUrl } from '../env.js';
 import { WalletEntity } from './mikro-orm/entities/wallet.entity.js';
 import { WagerTransactionEntity } from './mikro-orm/entities/wager-transaction.entity.js';
+import { WalletLedgerEntryEntity } from './mikro-orm/entities/wallet-ledger-entry.entity.js';
 
 export const mikroOrmConfig = defineConfig({
   clientUrl: resolvedDatabaseUrl,
   extensions: [Migrator],
-  entities: [WalletEntity, WagerTransactionEntity],
+  entities: [WalletEntity, WagerTransactionEntity, WalletLedgerEntryEntity],
   metadataProvider: ReflectMetadataProvider,
   preferTs: false,
   migrations: {
