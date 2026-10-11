@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { DomainError } from '../../../../core/domain/domain-error.js';
 import { Money } from '../../../../core/domain/money.js';
+import { InsufficientWalletBalanceError } from '../errors/insufficient-wallet-balance-error.js';
 
 export interface WalletState {
   id: string;
@@ -82,7 +83,7 @@ export class Wallet {
     }
 
     if (this._balance.isLessThan(amount)) {
-      throw new DomainError('Wallet has insufficient balance');
+      throw new InsufficientWalletBalanceError();
     }
 
     this.changeBalance(this._balance.subtract(amount));

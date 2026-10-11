@@ -20,3 +20,23 @@ Accept: application/json
 ### Get wallet ledger
 GET {{baseUrl}}/wallets/{{createWallet.response.body.$.id}}/ledger?limit=50
 Accept: application/json
+
+### Submit a BET
+# @name submitBet
+POST {{baseUrl}}/wagering/transactions
+Idempotency-Key: provider-a:transaction-123
+Content-Type: application/json
+
+{
+  "providerId": "provider-a",
+  "externalTransactionId": "transaction-123",
+  "playerId": "d0c4be2c-e53d-44df-9724-e0d5d5172d0b",
+  "walletId": "{{createWallet.response.body.$.id}}",
+  "roundId": "round-987",
+  "gameId": "fortune-chimp",
+  "kind": "BET",
+  "money": {
+    "amount": "25.00",
+    "currency": "BRL"
+  }
+}

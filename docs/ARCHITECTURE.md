@@ -48,7 +48,7 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 - `POST /wallets` recebe `playerId` UUID e `initialBalance` como objeto com `amount` decimal string e moeda ISO de três letras. A resposta expõe valores monetários como strings.
 - `GET /wallets/:walletId` valida o UUID e retorna os dados atuais da carteira; retorna `404` quando o identificador válido não existe.
 - `GET /wallets/:walletId/ledger` retorna os lançamentos em ordem decrescente de criação e UUID, com paginação keyset. `limit` aceita de 1 a 100 (padrão 50); `cursor` é opaco, estável mesmo com timestamps PostgreSQL em microssegundos e vinculado à carteira. A resposta contém `entries` e `nextCursor` (`null` quando não há outra página); carteira inexistente retorna `404` e cursor ou parâmetros inválidos retornam `400`.
-- O aggregate já protege moeda e saldo insuficiente em memória. Endpoints de crédito e débito só serão expostos junto ao ledger e à transação PostgreSQL que confirme alteração de saldo e lançamento de forma atômica.
+- O aggregate protege moeda e saldo insuficiente. O débito externo está exposto somente para `BET` e é confirmado junto da transação e do ledger na mesma transação PostgreSQL.
 
 ## Persistência de operações de aposta
 
@@ -56,8 +56,11 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 - A chave de idempotência é única no escopo `(provider_id, idempotency_key)`. A identidade externa da operação também é única por `(provider_id, external_transaction_id)`.
 - Cada transação referencia uma carteira existente. Referências a operações são opcionais até resolução, salvo a exigência de `reference_external_transaction_id` para `REFUND` e `ROLLBACK`; a referência interna usa FK para `wager_transactions`.
 - Tipo, status, moeda, valor positivo e timestamp de processamento são protegidos por constraints. Valor é `NUMERIC(20,2)` e moeda permanece explícita.
-- `SubmitWagerTransactionUseCase` persiste novas operações como `PENDING`; replay da mesma chave e hash retorna o registro original, enquanto conflito de hash ou duplicidade do identificador externo é rejeitado. A constraint única do banco arbitra corridas entre instâncias; o repositório retorna o registro vencedor para que o caso de uso aplique a mesma regra de replay/conflito.
-- Nesta etapa, receber/submeter a transação não altera saldo nem grava ledger. Isso será responsabilidade do caso de uso de processamento, com transação PostgreSQL atômica.
+- `SubmitWagerTransactionUseCase` persiste novas operações como `PENDING`; replay da mesma chave e hash retorna o registro original, enquanto conflito de hash ou duplicidade do identificador externo é rejeitado.
+- `POST /wagering/transactions` nesta etapa aceita somente `BET`. Exige `Idempotency-Key`; `ProcessBetUseCase` cria um hash SHA-256 do conteúdo de negócio e envia a operação ao repositório transacional.
+- `MikroOrmProcessWagerTransactionsRepository` adquire `SELECT ... FOR UPDATE` na carteira, valida jogador/moeda, debita e insere a transação e o lançamento `DEBIT` atomicamente. A versão da carteira só avança quando o saldo muda.
+- Saldo insuficiente é persistido como `REJECTED` com `failureCode: INSUFFICIENT_FUNDS`, preserva o saldo/version da carteira e não cria ledger. O HTTP retorna `422`; operação processada retorna `200`; conflito de idempotência ou ID externo retorna `409`, carteira ausente/incompatível `404`, e payload inválido `400`.
+- `resulting_balance` guarda o saldo observado ao concluir ou rejeitar a transação para que replays idempotentes devolvam o resultado original mesmo após operações posteriores na carteira.
 
 ## Ledger de carteira
 
@@ -65,7 +68,7 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 - `DEBIT` e `CREDIT` armazenam valor e saldos anterior/posterior como `NUMERIC(20,2)`. A factory valida moeda, valor positivo, saldo não negativo e igualdade aritmética entre direção, valor e saldos.
 - A tabela `wallet_ledger_entries` tem FKs compostas para garantir que carteira, transação e moeda correspondam, além de constraints SQL para direção, saldo e aritmética do lançamento.
 - Correções devem ocorrer por novos lançamentos compensatórios, nunca por alteração ou exclusão dos existentes.
-- A persistência do ledger ainda não foi conectada ao processamento financeiro. Quando implementado, inserir lançamento, atualizar carteira e marcar a transação como processada deverá ocorrer na mesma transação PostgreSQL.
+- No processamento de `BET`, inserir lançamento, atualizar carteira e marcar a transação como processada ocorre na mesma transação PostgreSQL. `WIN`, `LOSS`, `REFUND` e `ROLLBACK` ainda não são processados pela API.
 
 ## Inbox e Outbox
 

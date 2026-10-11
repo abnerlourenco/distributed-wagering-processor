@@ -93,7 +93,7 @@ export class MikroOrmWagerTransactionsRepository implements WagerTransactionsRep
     return entity ? MikroOrmWagerTransactionsRepository.toDomain(entity) : null;
   }
 
-  private static toDomain(entity: WagerTransactionEntity): WagerTransaction {
+  static toDomain(entity: WagerTransactionEntity): WagerTransaction {
     const state: WagerTransactionState = {
       id: entity.id,
       providerId: entity.providerId,

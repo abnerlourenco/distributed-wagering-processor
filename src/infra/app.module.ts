@@ -4,9 +4,10 @@ import { AppController } from './http/controllers/app.controller.js';
 import { AppService } from './http/app.service.js';
 import { mikroOrmConfig } from './database/mikro-orm.config.js';
 import { WalletsModule } from './http/wallets/wallets.module.js';
+import { WageringModule } from './http/wagering/wagering.module.js';
 
 @Module({
-  imports: [MikroOrmModule.forRoot(mikroOrmConfig), WalletsModule],
+  imports: [MikroOrmModule.forRoot(mikroOrmConfig), WalletsModule, WageringModule],
   controllers: [AppController],
   providers: [AppService],
 })

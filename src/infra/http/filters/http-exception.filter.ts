@@ -8,6 +8,8 @@ import { ZodError } from 'zod';
 import { WalletAlreadyExistsError } from '../../../domain/wallets/application/errors/wallet-already-exists-error.js';
 import { WalletNotFoundError } from '../../../domain/wallets/application/errors/wallet-not-found-error.js';
 import { DomainError } from '../../../core/domain/domain-error.js';
+import { IdempotencyConflictError } from '../../../domain/wagering/application/errors/idempotency-conflict-error.js';
+import { WagerTransactionAlreadyExistsError } from '../../../domain/wagering/application/errors/wager-transaction-already-exists-error.js';
 
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
@@ -29,6 +31,14 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
     if (exception instanceof WalletNotFoundError) {
       response.status(404).json({ message: exception.message });
+      return;
+    }
+
+    if (
+      exception instanceof IdempotencyConflictError ||
+      exception instanceof WagerTransactionAlreadyExistsError
+    ) {
+      response.status(409).json({ message: exception.message });
       return;
     }
 

@@ -50,6 +50,15 @@ export class WagerTransactionEntity {
   @Property({ fieldName: 'failure_code', length: 64, nullable: true })
   failureCode?: string;
 
+  @Property({
+    fieldName: 'resulting_balance',
+    precision: 20,
+    scale: 2,
+    type: 'decimal',
+    nullable: true,
+  })
+  resultingBalance?: string;
+
   @Property({ fieldName: 'created_at' })
   createdAt!: Date;
 
