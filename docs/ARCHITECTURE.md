@@ -54,6 +54,8 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 - A chave de idempotência é única no escopo `(provider_id, idempotency_key)`. A identidade externa da operação também é única por `(provider_id, external_transaction_id)`.
 - Cada transação referencia uma carteira existente. Referências a operações são opcionais até resolução, salvo a exigência de `reference_external_transaction_id` para `REFUND` e `ROLLBACK`; a referência interna usa FK para `wager_transactions`.
 - Tipo, status, moeda, valor positivo e timestamp de processamento são protegidos por constraints. Valor é `NUMERIC(20,2)` e moeda permanece explícita.
+- `SubmitWagerTransactionUseCase` persiste novas operações como `PENDING`; replay da mesma chave e hash retorna o registro original, enquanto conflito de hash ou duplicidade do identificador externo é rejeitado. A constraint única do banco arbitra corridas entre instâncias; o repositório retorna o registro vencedor para que o caso de uso aplique a mesma regra de replay/conflito.
+- Nesta etapa, receber/submeter a transação não altera saldo nem grava ledger. Isso será responsabilidade do caso de uso de processamento, com transação PostgreSQL atômica.
 
 ## Decisões tomadas
 
