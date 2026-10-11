@@ -102,7 +102,9 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 - O Docker Compose sobe somente o PostgreSQL nesta fase.
 - O serviço usa a imagem `postgres:18-alpine`, volume nomeado persistente e health check com `pg_isready`.
 - A porta é publicada apenas em `127.0.0.1`, evitando exposição de rede desnecessária durante o desenvolvimento local.
-- `.env.example` documenta `PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_PORT` e `POSTGRES_HOST`. Credenciais de exemplo destinam-se exclusivamente ao ambiente local.
+- `.env.example` documenta `PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_PORT`, `POSTGRES_HOST` e a URL opcional do banco dedicado de testes de integração. Credenciais de exemplo destinam-se exclusivamente ao ambiente local.
+- Os testes de integração PostgreSQL usam `POSTGRES_TEST_DATABASE_URL`, exigem um nome de banco terminado em `_test` ou `-test`, aplicam as migrations e limpam as tabelas desse banco. Nunca apontar essa variável para o banco de desenvolvimento.
+- Para executar localmente, criar o banco `wagering_finances_test` para o usuário configurado no PostgreSQL, definir `POSTGRES_TEST_DATABASE_URL` apontando para ele e executar `bun run test:integration`. O comando compila a aplicação, aplica migrations, testa constraints e rollback transacional, e valida down/up de todas as migrations atuais.
 
 ## Configuração de ambiente
 
