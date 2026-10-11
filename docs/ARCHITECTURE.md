@@ -48,6 +48,13 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 - `POST /wallets` valida `playerId` UUID e moeda ISO de três letras com Zod. A resposta expõe valores monetários como strings.
 - O aggregate já protege moeda e saldo insuficiente em memória. Endpoints de crédito e débito só serão expostos junto ao ledger e à transação PostgreSQL que confirme alteração de saldo e lançamento de forma atômica.
 
+## Persistência de operações de aposta
+
+- `wager_transactions` armazena uma linha por operação do provedor (`BET`, `WIN`, `LOSS`, `REFUND` ou `ROLLBACK`); `OPENING` é reservado para operações internas.
+- A chave de idempotência é única no escopo `(provider_id, idempotency_key)`. A identidade externa da operação também é única por `(provider_id, external_transaction_id)`.
+- Cada transação referencia uma carteira existente. Referências a operações são opcionais até resolução, salvo a exigência de `reference_external_transaction_id` para `REFUND` e `ROLLBACK`; a referência interna usa FK para `wager_transactions`.
+- Tipo, status, moeda, valor positivo e timestamp de processamento são protegidos por constraints. Valor é `NUMERIC(20,2)` e moeda permanece explícita.
+
 ## Decisões tomadas
 
 1- Foi realizada a decisão de utilizar o MikroORM para mapeamento do banco de dados postgres.
