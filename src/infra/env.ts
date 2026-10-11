@@ -10,8 +10,7 @@ const envSchema = z.object({
   POSTGRES_USER: z.string().min(1),
 });
 
-const resolvedDatabaseUrl = `postgresql://${process.env.POSTGRES_USER}:${process.env.POSTGRES_PASSWORD}@${process.env.POSTGRES_HOST}:${process.env.POSTGRES_PORT}/${process.env.POSTGRES_DB}`;
+const env = envSchema.parse(process.env);
+const resolvedDatabaseUrl = `postgresql://${env.POSTGRES_USER}:${env.POSTGRES_PASSWORD}@${env.POSTGRES_HOST}:${env.POSTGRES_PORT}/${env.POSTGRES_DB}`;
 
-const env = envSchema.parse(process.env)
-
-export {env, resolvedDatabaseUrl};
+export { env, resolvedDatabaseUrl };

@@ -1,0 +1,13 @@
+import { Module } from '@nestjs/common';
+import { MikroOrmModule } from '@mikro-orm/nestjs';
+import { AppController } from './http/controllers/app.controller.js';
+import { AppService } from './http/app.service.js';
+import { mikroOrmConfig } from './database/mikro-orm.config.js';
+import { WalletsModule } from './http/wallets/wallets.module.js';
+
+@Module({
+  imports: [MikroOrmModule.forRoot(mikroOrmConfig), WalletsModule],
+  controllers: [AppController],
+  providers: [AppService],
+})
+export class AppModule {}
