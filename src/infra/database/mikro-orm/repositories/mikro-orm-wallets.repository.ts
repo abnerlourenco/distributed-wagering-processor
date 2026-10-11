@@ -100,15 +100,30 @@ export class MikroOrmWalletsRepository implements WalletsRepository {
     playerId: string,
     currency: string,
   ): Promise<Wallet | null> {
-    const entity = await this.entityManager.findOne(WalletEntity, {
-      playerId,
-      currency,
-    });
+    const entity = await this.entityManager
+      .fork({ clear: true })
+      .findOne(WalletEntity, { playerId, currency });
 
     if (!entity) {
       return null;
     }
 
+    return MikroOrmWalletsRepository.toDomain(entity);
+  }
+
+  async findById(walletId: string): Promise<Wallet | null> {
+    const entity = await this.entityManager
+      .fork({ clear: true })
+      .findOne(WalletEntity, { id: walletId });
+
+    if (!entity) {
+      return null;
+    }
+
+    return MikroOrmWalletsRepository.toDomain(entity);
+  }
+
+  private static toDomain(entity: WalletEntity): Wallet {
     return Wallet.rehydrate({
       id: entity.id,
       playerId: entity.playerId,

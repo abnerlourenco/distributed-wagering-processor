@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Wallet } from '../../../domain/wallets/enterprise/entities/wallet.js';
 import type { WalletsRepository } from '../../../domain/wallets/application/repositories/wallets-repository.js';
 import { OpenWalletUseCase } from '../../../domain/wallets/application/use-cases/open-wallet.js';
+import { GetWalletUseCase } from '../../../domain/wallets/application/use-cases/get-wallet.js';
 import { WalletsController } from './wallets.controller.js';
 
 class InMemoryWalletsRepository implements WalletsRepository {
@@ -10,12 +11,17 @@ class InMemoryWalletsRepository implements WalletsRepository {
   async findByPlayerIdAndCurrency(): Promise<Wallet | null> {
     return null;
   }
+
+  async findById(): Promise<Wallet | null> {
+    return null;
+  }
 }
 
 describe('WalletsController', () => {
   it('accepts and returns an exact initial balance', async () => {
     const controller = new WalletsController(
       new OpenWalletUseCase(new InMemoryWalletsRepository()),
+      new GetWalletUseCase(new InMemoryWalletsRepository()),
     );
 
     const result = await controller.create({
@@ -30,6 +36,7 @@ describe('WalletsController', () => {
   it('rejects malformed monetary input', async () => {
     const controller = new WalletsController(
       new OpenWalletUseCase(new InMemoryWalletsRepository()),
+      new GetWalletUseCase(new InMemoryWalletsRepository()),
     );
 
     await expect(

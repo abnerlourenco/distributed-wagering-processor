@@ -33,6 +33,10 @@ class InMemoryWalletsRepository implements WalletsRepository {
       ) ?? null
     );
   }
+
+  async findById(walletId: string): Promise<Wallet | null> {
+    return this.wallets.find((wallet) => wallet.id === walletId) ?? null;
+  }
 }
 
 describe('OpenWalletUseCase', () => {

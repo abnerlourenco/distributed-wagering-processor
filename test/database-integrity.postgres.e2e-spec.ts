@@ -150,6 +150,20 @@ describe('PostgreSQL migrations and integrity constraints', () => {
     await expect(insertWallet({ playerId: wallet.playerId })).rejects.toThrow();
   });
 
+  it('loads a persisted wallet by ID with exact balance and version', async () => {
+    const persisted = await insertWallet({ balance: '125.40' });
+    const repository = new MikroOrmWalletsRepository(orm.em.fork({ clear: true }));
+
+    const wallet = await repository.findById(persisted.id);
+
+    expect(wallet).not.toBeNull();
+    expect(wallet?.id).toBe(persisted.id);
+    expect(wallet?.playerId).toBe(persisted.playerId);
+    expect(wallet?.balance.toJSON()).toEqual({ amount: '125.40', currency: 'BRL' });
+    expect(wallet?.version).toBe(1);
+    await expect(repository.findById(randomUUID())).resolves.toBeNull();
+  });
+
   it('persists positive initial balance with a processed OPENING transaction and credit ledger atomically', async () => {
     const initialBalance = Money.from({ amount: '250.00', currency: 'BRL' });
     const { wallet } = await new OpenWalletUseCase(

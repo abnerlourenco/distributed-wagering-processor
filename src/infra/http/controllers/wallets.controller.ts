@@ -1,6 +1,7 @@
-import { Body, Controller, HttpCode, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post } from '@nestjs/common';
 import { z } from 'zod';
 import { Money } from '../../../core/domain/money.js';
+import { GetWalletUseCase } from '../../../domain/wallets/application/use-cases/get-wallet.js';
 import { OpenWalletUseCase } from '../../../domain/wallets/application/use-cases/open-wallet.js';
 
 const openWalletBodySchema = z.object({
@@ -13,7 +14,25 @@ const openWalletBodySchema = z.object({
 
 @Controller('wallets')
 export class WalletsController {
-  constructor(private readonly openWallet: OpenWalletUseCase) {}
+  constructor(
+    private readonly openWallet: OpenWalletUseCase,
+    private readonly getWallet: GetWalletUseCase,
+  ) {}
+
+  @Get(':walletId')
+  async findById(@Param('walletId') walletId: string) {
+    const id = z.uuid().parse(walletId);
+    const { wallet } = await this.getWallet.execute(id);
+
+    return {
+      id: wallet.id,
+      playerId: wallet.playerId,
+      balance: wallet.balance.toJSON(),
+      version: wallet.version,
+      createdAt: wallet.createdAt,
+      updatedAt: wallet.updatedAt,
+    };
+  }
 
   @Post()
   @HttpCode(201)

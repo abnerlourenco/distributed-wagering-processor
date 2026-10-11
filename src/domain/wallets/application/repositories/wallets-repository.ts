@@ -13,4 +13,5 @@ export interface WalletsRepository {
     playerId: string,
     currency: string,
   ): Promise<Wallet | null>;
+  findById(walletId: string): Promise<Wallet | null>;
 }

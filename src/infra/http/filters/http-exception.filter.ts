@@ -6,6 +6,7 @@ import {
 import type { Response } from 'express';
 import { ZodError } from 'zod';
 import { WalletAlreadyExistsError } from '../../../domain/wallets/application/errors/wallet-already-exists-error.js';
+import { WalletNotFoundError } from '../../../domain/wallets/application/errors/wallet-not-found-error.js';
 import { DomainError } from '../../../core/domain/domain-error.js';
 
 @Catch()
@@ -23,6 +24,11 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
     if (exception instanceof WalletAlreadyExistsError) {
       response.status(409).json({ message: exception.message });
+      return;
+    }
+
+    if (exception instanceof WalletNotFoundError) {
+      response.status(404).json({ message: exception.message });
       return;
     }
 
