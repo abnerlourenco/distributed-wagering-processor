@@ -6,19 +6,47 @@ O projeto é uma aplicação distribuida para processar operações financeiras 
 
 ## Estado atual
 
-A fundação HTTP está baseada em NestJS e TypeScript estrito. O `AppModule` registra o `MikroOrmModule` com uma configuração PostgreSQL centralizada. Ainda não existem entidades, migrations ou regras financeiras; portanto, a descoberta vazia de entidades está explicitamente permitida enquanto a camada de persistência não é implementada.
+A fundação HTTP está baseada em NestJS e TypeScript estrito. O `AppModule` registra o `MikroOrmModule` com uma configuração PostgreSQL centralizada e o módulo `wallets`. A primeira migration ainda está pendente de aplicação; schema não é sincronizado automaticamente.
+
+A aplicação segue a organização: `src/core` contém conceitos compartilhados, `src/domain` é dividido por contexto, `src/infra` concentra os adaptadores e a composição NestJS, e `./test` contém os testes end-to-end. Testes unitários ficam junto do código testado. Regras financeiras não dependem de NestJS, controllers ou MikroORM.
+
+## Estilo de implementação
+
+O projeto segue os princípios da Clean Architecture e organiza os arquivos pelas seguintes fronteiras:
 
 ```text
 src/
-├── app.module.ts                         # composição da aplicação e integração do MikroORM
-├── env.ts                                # leitura e validação das variáveis de ambiente
-├── main.ts                               # bootstrap HTTP
+├── main.ts
+├── core/                         # conceitos compartilhados e genéricos
+│   └── domain/                   # Money e DomainError
+├── domain/                       # contextos de negócio
+│   └── wallets/
+│       ├── application/          # casos de uso, portas e erros
+│       └── enterprise/
+│           └── entities/         # aggregate Wallet
 └── infra/
+    ├── app.module.ts             # composição dos módulos NestJS
+    ├── http/
+    │   ├── controllers/
+    │   └── wallets/
     └── database/
-        └── mikro-orm.config.ts           # configuração central do PostgreSQL e migrations
+        ├── mikro-orm/            # entidades e repositórios MikroORM
+        └── migrations/
+
+test/
+└── app.e2e-spec.ts               # testes end-to-end
 ```
 
-A estrutura evoluirá para separar domínio, aplicação, infraestrutura e apresentação por módulo. Regras financeiras não deverão depender de NestJS, controllers ou MikroORM.
+Value objects e abstrações genéricas ficam em `core`; regras específicas, como `Wallet`, ficam em `domain/wallets/enterprise`, enquanto casos de uso e contratos ficam em `domain/wallets/application`. Controllers, módulos NestJS, adaptadores do MikroORM e migrations pertencem a `infra`. Testes unitários ficam co-localizados como `*.spec.ts`; testes e2e ficam em `test/`.
+
+## Módulo Wallets
+
+- `Wallet` é o aggregate root. Ele abre com saldo `0.00`, moeda definida e versão `1`; estado e transições permanecem encapsulados.
+- `Wallet.open()` cria um aggregate novo; `Wallet.rehydrate()` reconstrói o estado persistido sem reexecutar regras de transição.
+- `OpenWalletUseCase` cria uma carteira por jogador/moeda e depende apenas de `WalletsRepository`.
+- `MikroOrmWalletsRepository` adapta esse contrato ao PostgreSQL e converte violações da constraint de unicidade em erro de domínio.
+- `POST /wallets` valida `playerId` UUID e moeda ISO de três letras com Zod. A resposta expõe valores monetários como strings.
+- O aggregate já protege moeda e saldo insuficiente em memória. Endpoints de crédito e débito só serão expostos junto ao ledger e à transação PostgreSQL que confirme alteração de saldo e lançamento de forma atômica.
 
 ## Decisões tomadas
 
@@ -39,6 +67,9 @@ A estrutura evoluirá para separar domínio, aplicação, infraestrutura e apres
 - A URL de conexão é construída a partir das variáveis `POSTGRES_*` e entregue ao MikroORM por `clientUrl`.
 - A configuração de migrations está centralizada em `src/infra/database/mikro-orm.config.ts`, com saídas compiladas em `dist/infra/database/migrations`.
 - Não há sincronização automática de schema. Toda mudança futura de banco deverá ser entregue como migration versionada e reversível quando tecnicamente possível.
+- `Money` é um value object de domínio imutável, implementado com `decimal.js`; não possui tabela própria. Valores entram e saem da aplicação como strings decimais com duas casas e são persistidos em colunas `NUMERIC(20,2)`.
+- A primeira migration cria a tabela `wallets`. Ela armazena UUIDs de carteira e jogador, a moeda como código ISO 4217 de três letras, o saldo materializado como `NUMERIC(20,2)`, `version` para controle otimista e timestamps de criação e atualização. O banco impede saldo negativo, versão inválida e duplicidade de carteira por par `(player_id, currency)`.
+- `wallets.player_id` ainda não possui chave estrangeira porque o módulo/tabela de jogadores não existe. A migration que introduzir jogadores deverá criar a FK sem invalidar dados existentes.
 
 ### Ambiente local
 
@@ -49,16 +80,16 @@ A estrutura evoluirá para separar domínio, aplicação, infraestrutura e apres
 
 ## Configuração de ambiente
 
-Foi realizada a validação de variaveis em `src/env.ts` e criação da url de conexão do banco de dados.
+Foi realizada a validação de variaveis em `src/infra/env.ts` e criação da url de conexão do banco de dados.
 A aplicação deve falhar no boot quando as configurações obrigatórias forem ausentes ou inválidas, sem imprimir credenciais.
 
 ## Fronteiras futuras
 
-- `modules/wallets`: carteira por jogador e moeda, saldo materializado e proteção contra saldo negativo.
-- `modules/wagering`: operações `BET`, `WIN`, `LOSS`, `REFUND` e `ROLLBACK`, incluindo transições válidas e referências entre operações.
-- `shared/domain`: objetos de valor, especialmente dinheiro decimal exato, e erros de domínio compartilhados.
-- `infra/database`: entidades de persistência, migrations e implementações de repositórios.
-- `presentation`: DTOs, controllers e tradução de erros de domínio em respostas HTTP.
+- `src/domain/wallets`: carteira por jogador e moeda, saldo materializado e proteção contra saldo negativo.
+- `src/domain/wagering`: operações `BET`, `WIN`, `LOSS`, `REFUND` e `ROLLBACK`, incluindo transições válidas e referências entre operações.
+- `src/core/domain`: objetos de valor compartilhados, especialmente dinheiro decimal exato, e erros de domínio.
+- `src/infra/database`: entidades de persistência, migrations e implementações de repositórios.
+- `src/infra/http`: DTOs, controllers e tradução de erros de domínio em respostas HTTP.
 
 ## Regras que guiarão a persistência financeira
 
