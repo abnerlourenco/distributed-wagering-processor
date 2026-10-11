@@ -1,14 +1,19 @@
 import { defineConfig } from '@mikro-orm/postgresql';
-import { resolvedDatabaseUrl } from '../../env.js';
+import { Migrator } from '@mikro-orm/migrations';
+import { ReflectMetadataProvider } from '@mikro-orm/decorators/legacy';
+import { resolvedDatabaseUrl } from '../env.js';
+import { WalletEntity } from './mikro-orm/entities/wallet.entity.js';
 
 export const mikroOrmConfig = defineConfig({
   clientUrl: resolvedDatabaseUrl,
-  entities: [],
-  discovery: {
-    warnWhenNoEntities: false,
-  },
+  extensions: [Migrator],
+  entities: [WalletEntity],
+  metadataProvider: ReflectMetadataProvider,
+  preferTs: false,
   migrations: {
     path: 'dist/infra/database/migrations',
     pathTs: 'src/infra/database/migrations',
   },
 });
+
+export default mikroOrmConfig;
