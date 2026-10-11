@@ -3,6 +3,7 @@ import { Wallet } from '../../../domain/wallets/enterprise/entities/wallet.js';
 import type { WalletsRepository } from '../../../domain/wallets/application/repositories/wallets-repository.js';
 import { OpenWalletUseCase } from '../../../domain/wallets/application/use-cases/open-wallet.js';
 import { GetWalletUseCase } from '../../../domain/wallets/application/use-cases/get-wallet.js';
+import { GetWalletLedgerUseCase } from '../../../domain/wallets/application/use-cases/get-wallet-ledger.js';
 import { WalletsController } from './wallets.controller.js';
 
 class InMemoryWalletsRepository implements WalletsRepository {
@@ -22,6 +23,10 @@ describe('WalletsController', () => {
     const controller = new WalletsController(
       new OpenWalletUseCase(new InMemoryWalletsRepository()),
       new GetWalletUseCase(new InMemoryWalletsRepository()),
+      new GetWalletLedgerUseCase(
+        new InMemoryWalletsRepository(),
+        { findPage: async () => [] },
+      ),
     );
 
     const result = await controller.create({
@@ -37,6 +42,10 @@ describe('WalletsController', () => {
     const controller = new WalletsController(
       new OpenWalletUseCase(new InMemoryWalletsRepository()),
       new GetWalletUseCase(new InMemoryWalletsRepository()),
+      new GetWalletLedgerUseCase(
+        new InMemoryWalletsRepository(),
+        { findPage: async () => [] },
+      ),
     );
 
     await expect(

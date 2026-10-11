@@ -12,6 +12,7 @@ import {
   WagerTransactionKind,
 } from '../src/domain/wagering/enterprise/entities/wager-transaction.js';
 import { mikroOrmConfig } from '../src/infra/database/mikro-orm.config.js';
+import { MikroOrmWalletLedgerEntriesRepository } from '../src/infra/database/mikro-orm/repositories/mikro-orm-wallet-ledger-entries.repository.js';
 import { MikroOrmWalletsRepository } from '../src/infra/database/mikro-orm/repositories/mikro-orm-wallets.repository.js';
 
 const testDatabaseUrl = process.env.POSTGRES_TEST_DATABASE_URL;
@@ -162,6 +163,58 @@ describe('PostgreSQL migrations and integrity constraints', () => {
     expect(wallet?.balance.toJSON()).toEqual({ amount: '125.40', currency: 'BRL' });
     expect(wallet?.version).toBe(1);
     await expect(repository.findById(randomUUID())).resolves.toBeNull();
+  });
+
+  it('paginates the ledger with a stable keyset cursor at microsecond precision', async () => {
+    const wallet = await insertWallet();
+    const ledgerIds = [randomUUID(), randomUUID(), randomUUID()];
+    const createdAt = [
+      '2026-01-01T00:00:00.000001Z',
+      '2026-01-01T00:00:00.000002Z',
+      '2026-01-01T00:00:00.000003Z',
+    ];
+
+    for (let index = 0; index < ledgerIds.length; index += 1) {
+      const transactionId = await insertWagerTransaction({
+        walletId: wallet.id,
+        playerId: wallet.playerId,
+      });
+      await execute(
+        `insert into "wallet_ledger_entries" (
+          "id", "wallet_id", "transaction_id", "direction", "amount",
+          "currency", "balance_before", "balance_after", "created_at"
+        ) values (?, ?, ?, 'CREDIT', 1.00, 'BRL', ?, ?, ?::timestamptz)`,
+        [
+          ledgerIds[index],
+          wallet.id,
+          transactionId,
+          (100 + index).toFixed(2),
+          (101 + index).toFixed(2),
+          createdAt[index],
+        ],
+      );
+    }
+
+    const repository = new MikroOrmWalletLedgerEntriesRepository(
+      orm.em.fork({ clear: true }),
+    );
+    const firstPage = await repository.findPage(wallet.id, 3);
+
+    expect(firstPage.map(({ entry }) => entry.id)).toEqual([
+      ledgerIds[2],
+      ledgerIds[1],
+      ledgerIds[0],
+    ]);
+    expect(firstPage[0].cursorCreatedAt).toBe(
+      '2026-01-01T00:00:00.000003Z',
+    );
+
+    const secondPage = await repository.findPage(wallet.id, 2, {
+      createdAt: firstPage[1].cursorCreatedAt,
+      id: firstPage[1].entry.id,
+    });
+
+    expect(secondPage.map(({ entry }) => entry.id)).toEqual([ledgerIds[0]]);
   });
 
   it('persists positive initial balance with a processed OPENING transaction and credit ledger atomically', async () => {

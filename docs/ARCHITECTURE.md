@@ -47,6 +47,7 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 - `MikroOrmWalletsRepository` grava carteira, operação `OPENING` e lançamento de ledger em uma única transação PostgreSQL, e converte conflitos da carteira por jogador/moeda em erro de domínio.
 - `POST /wallets` recebe `playerId` UUID e `initialBalance` como objeto com `amount` decimal string e moeda ISO de três letras. A resposta expõe valores monetários como strings.
 - `GET /wallets/:walletId` valida o UUID e retorna os dados atuais da carteira; retorna `404` quando o identificador válido não existe.
+- `GET /wallets/:walletId/ledger` retorna os lançamentos em ordem decrescente de criação e UUID, com paginação keyset. `limit` aceita de 1 a 100 (padrão 50); `cursor` é opaco, estável mesmo com timestamps PostgreSQL em microssegundos e vinculado à carteira. A resposta contém `entries` e `nextCursor` (`null` quando não há outra página); carteira inexistente retorna `404` e cursor ou parâmetros inválidos retornam `400`.
 - O aggregate já protege moeda e saldo insuficiente em memória. Endpoints de crédito e débito só serão expostos junto ao ledger e à transação PostgreSQL que confirme alteração de saldo e lançamento de forma atômica.
 
 ## Persistência de operações de aposta
