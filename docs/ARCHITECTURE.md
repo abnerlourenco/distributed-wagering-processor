@@ -6,7 +6,7 @@ O projeto é uma aplicação distribuida para processar operações financeiras 
 
 ## Estado atual
 
-A fundação HTTP está baseada em NestJS e TypeScript estrito. O `AppModule` registra o `MikroOrmModule` com uma configuração PostgreSQL centralizada e o módulo `wallets`. A primeira migration ainda está pendente de aplicação; schema não é sincronizado automaticamente.
+A fundação HTTP está baseada em NestJS e TypeScript estrito. O `AppModule` registra o `MikroOrmModule` com uma configuração PostgreSQL centralizada e o módulo `wallets`. O schema é mantido por migrations versionadas e não é sincronizado automaticamente.
 
 A aplicação segue a organização: `src/core` contém conceitos compartilhados, `src/domain` é dividido por contexto, `src/infra` concentra os adaptadores e a composição NestJS, e `./test` contém os testes end-to-end. Testes unitários ficam junto do código testado. Regras financeiras não dependem de NestJS, controllers ou MikroORM.
 
@@ -65,6 +65,14 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 - Correções devem ocorrer por novos lançamentos compensatórios, nunca por alteração ou exclusão dos existentes.
 - A persistência do ledger ainda não foi conectada ao processamento financeiro. Quando implementado, inserir lançamento, atualizar carteira e marcar a transação como processada deverá ocorrer na mesma transação PostgreSQL.
 
+## Inbox e Outbox
+
+- `inbox_messages` registra mensagens recebidas e deduplica sua entrada no escopo `(consumer_name, source, message_id)`. `payload_hash` permite ao consumidor identificar uma mesma chave recebida com conteúdo diferente.
+- `outbox_messages` registra eventos de saída junto aos dados de negócio na mesma transação PostgreSQL. `deduplication_key`, quando informado, evita inserir novamente o mesmo evento lógico.
+- Ambas as tabelas guardam payload JSONB, estado, tentativas, data de disponibilidade e código de erro técnico; não devem armazenar stack traces, tokens ou segredos em `last_error_code`.
+- Índices parciais facilitam localizar mensagens disponíveis para processamento. Estados e timestamps de conclusão são protegidos por constraints.
+- Esta etapa cria somente o modelo persistente. Consumidores, publisher, política/backoff de retries e integração com SQS/LocalStack ficam para uma etapa posterior. Inserção de outbox só garante publicação futura quando realizada na mesma transação dos dados de negócio; entrega permanece potencialmente duplicada e consumidores devem ser idempotentes.
+
 ## Decisões tomadas
 
 1- Foi realizada a decisão de utilizar o MikroORM para mapeamento do banco de dados postgres.
@@ -84,6 +92,7 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 - A URL de conexão é construída a partir das variáveis `POSTGRES_*` e entregue ao MikroORM por `clientUrl`.
 - A configuração de migrations está centralizada em `src/infra/database/mikro-orm.config.ts`, com saídas compiladas em `dist/infra/database/migrations`.
 - Não há sincronização automática de schema. Toda mudança futura de banco deverá ser entregue como migration versionada e reversível quando tecnicamente possível.
+- Constraints e índices definidos nas migrations não estão todos espelhados nos metadados das entidades; não executar `schema:update`, pois ele pode propor remover essas proteções. Alterações de schema devem usar migrations revisadas.
 - `Money` é um value object de domínio imutável, implementado com `decimal.js`; não possui tabela própria. Valores entram e saem da aplicação como strings decimais com duas casas e são persistidos em colunas `NUMERIC(20,2)`.
 - A primeira migration cria a tabela `wallets`. Ela armazena UUIDs de carteira e jogador, a moeda como código ISO 4217 de três letras, o saldo materializado como `NUMERIC(20,2)`, `version` para controle otimista e timestamps de criação e atualização. O banco impede saldo negativo, versão inválida e duplicidade de carteira por par `(player_id, currency)`.
 - `wallets.player_id` ainda não possui chave estrangeira porque o módulo/tabela de jogadores não existe. A migration que introduzir jogadores deverá criar a FK sem invalidar dados existentes.
@@ -118,4 +127,4 @@ A aplicação deve falhar no boot quando as configurações obrigatórias forem 
 
 ## Fora de escopo por enquanto
 
-SQS/LocalStack, inbox/outbox, Keycloak e OpenTelemetry permanecem adiados até a consolidação de carteiras, transações, ledger, idempotência, concorrência e respectivos testes de integração com PostgreSQL real.
+As tabelas e entidades de Inbox/Outbox já estão definidas, mas ainda não participam do fluxo financeiro. A integração do processamento com Inbox/Outbox e a entrega por SQS/LocalStack continuam pendentes até a consolidação da atomicidade financeira e dos testes de concorrência com PostgreSQL real. Keycloak e OpenTelemetry também permanecem adiados.
