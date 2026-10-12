@@ -99,3 +99,23 @@ Content-Type: application/json
     "currency": "BRL"
   }
 }
+
+### Roll back a processed transaction (send independently; one processed rollback per reference)
+POST {{baseUrl}}/wagering/transactions
+Idempotency-Key: provider-a:rollback-transaction-123
+Content-Type: application/json
+
+{
+  "providerId": "provider-a",
+  "externalTransactionId": "rollback-transaction-123",
+  "playerId": "d0c4be2c-e53d-44df-9724-e0d5d5172d0b",
+  "walletId": "{{createWallet.response.body.$.id}}",
+  "roundId": "round-987",
+  "gameId": "fortune-chimp",
+  "kind": "ROLLBACK",
+  "referenceExternalTransactionId": "transaction-123",
+  "money": {
+    "amount": "25.00",
+    "currency": "BRL"
+  }
+}

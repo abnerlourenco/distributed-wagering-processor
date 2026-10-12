@@ -100,7 +100,8 @@ export class MikroOrmProcessWagerTransactionsRepository
         let rejected = false;
         const processedReference =
           (transaction.kind === WagerTransactionKind.Win ||
-            transaction.kind === WagerTransactionKind.Refund) &&
+            transaction.kind === WagerTransactionKind.Refund ||
+            transaction.kind === WagerTransactionKind.Rollback) &&
           transaction.referenceExternalTransactionId
             ? await entityManager.findOne(WagerTransactionEntity, {
                 providerId: transaction.providerId,
@@ -183,6 +184,55 @@ export class MikroOrmProcessWagerTransactionsRepository
         }
 
         if (
+          transaction.kind === WagerTransactionKind.Rollback &&
+          transaction.referenceExternalTransactionId
+        ) {
+          if (
+            !processedReference ||
+            processedReference.status === WagerTransactionStatus.Pending ||
+            processedReference.status === WagerTransactionStatus.PendingReference
+          ) {
+            transaction.markPendingReference();
+          } else if (
+            processedReference.status !== WagerTransactionStatus.Processed ||
+            (processedReference.kind !== WagerTransactionKind.Bet &&
+              processedReference.kind !== WagerTransactionKind.Win &&
+              processedReference.kind !== WagerTransactionKind.Refund) ||
+            processedReference.walletId !== transaction.walletId ||
+            processedReference.playerId !== transaction.playerId ||
+            processedReference.providerId !== transaction.providerId ||
+            processedReference.roundId !== transaction.roundId ||
+            processedReference.currency !== transaction.money.currency
+          ) {
+            transaction.reject('INVALID_REFERENCE');
+            rejected = true;
+          } else if (
+            !Money.from({
+              amount: processedReference.amount,
+              currency: processedReference.currency,
+            }).equals(transaction.money)
+          ) {
+            transaction.reject('ROLLBACK_AMOUNT_MISMATCH');
+            rejected = true;
+          } else {
+            const existingRollback = await entityManager.findOne(
+              WagerTransactionEntity,
+              {
+                kind: WagerTransactionKind.Rollback,
+                referenceTransactionId: processedReference.id,
+                status: WagerTransactionStatus.Processed,
+              },
+            );
+            if (existingRollback) {
+              transaction.reject('REFERENCE_ALREADY_ROLLED_BACK');
+              rejected = true;
+            } else {
+              referenceTransactionId = processedReference.id;
+            }
+          }
+        }
+
+        if (
           transaction.status !== WagerTransactionStatus.PendingReference &&
           transaction.status !== WagerTransactionStatus.Rejected
         ) {
@@ -203,6 +253,22 @@ export class MikroOrmProcessWagerTransactionsRepository
             transaction.kind === WagerTransactionKind.Refund
           ) {
             wallet.credit(transaction.money);
+          } else if (
+            transaction.kind === WagerTransactionKind.Rollback &&
+            processedReference?.kind === WagerTransactionKind.Bet
+          ) {
+            wallet.credit(transaction.money);
+          } else if (transaction.kind === WagerTransactionKind.Rollback) {
+            try {
+              wallet.debit(transaction.money);
+            } catch (error) {
+              if (!(error instanceof InsufficientWalletBalanceError)) {
+                throw error;
+              }
+
+              transaction.reject('ROLLBACK_INSUFFICIENT_FUNDS');
+              rejected = true;
+            }
           }
 
           if (!rejected) {
@@ -219,12 +285,24 @@ export class MikroOrmProcessWagerTransactionsRepository
               });
             } else if (
               transaction.kind === WagerTransactionKind.Win ||
-              transaction.kind === WagerTransactionKind.Refund
+              transaction.kind === WagerTransactionKind.Refund ||
+              (transaction.kind === WagerTransactionKind.Rollback &&
+                processedReference?.kind === WagerTransactionKind.Bet)
             ) {
               ledgerEntry = WalletLedgerEntry.create({
                 walletId: wallet.id,
                 transactionId: transaction.id,
                 direction: LedgerDirection.Credit,
+                money: transaction.money,
+                balanceBefore,
+                balanceAfter: wallet.balance,
+                createdAt: processedAt,
+              });
+            } else if (transaction.kind === WagerTransactionKind.Rollback) {
+              ledgerEntry = WalletLedgerEntry.create({
+                walletId: wallet.id,
+                transactionId: transaction.id,
+                direction: LedgerDirection.Debit,
                 money: transaction.money,
                 balanceBefore,
                 balanceAfter: wallet.balance,
@@ -320,6 +398,14 @@ export class MikroOrmProcessWagerTransactionsRepository
           transaction.referenceExternalTransactionId
       ) {
         throw new DomainError('The referenced BET has already been refunded');
+      }
+      if (
+        transaction.kind === WagerTransactionKind.Rollback &&
+        existing.kind === WagerTransactionKind.Rollback &&
+        existing.referenceExternalTransactionId ===
+          transaction.referenceExternalTransactionId
+      ) {
+        throw new DomainError('The referenced transaction has already been rolled back');
       }
 
       return this.replay(existing, transaction);

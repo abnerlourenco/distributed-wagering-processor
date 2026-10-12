@@ -28,6 +28,7 @@ const submitWagerTransactionBodySchema = z
       WagerTransactionKind.Win,
       WagerTransactionKind.Loss,
       WagerTransactionKind.Refund,
+      WagerTransactionKind.Rollback,
     ]),
     money: z.object({
       amount: z.string().regex(/^\d{1,18}\.\d{2}$/),
@@ -38,20 +39,22 @@ const submitWagerTransactionBodySchema = z
   .strict()
   .superRefine((request, context) => {
     if (
-      request.kind === WagerTransactionKind.Refund &&
+      (request.kind === WagerTransactionKind.Refund ||
+        request.kind === WagerTransactionKind.Rollback) &&
       !request.referenceExternalTransactionId
     ) {
       context.addIssue({
         code: 'custom',
         path: ['referenceExternalTransactionId'],
-        message: 'REFUND requires a referenced external transaction id',
+        message: `${request.kind} requires a referenced external transaction id`,
       });
     }
 
     if (
       request.referenceExternalTransactionId &&
       request.kind !== WagerTransactionKind.Win &&
-      request.kind !== WagerTransactionKind.Refund
+      request.kind !== WagerTransactionKind.Refund &&
+      request.kind !== WagerTransactionKind.Rollback
     ) {
       context.addIssue({
         code: 'custom',

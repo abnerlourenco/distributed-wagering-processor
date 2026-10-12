@@ -54,6 +54,51 @@ class InMemoryProcessWagerTransactionsRepository
       return result;
     }
 
+    if (transaction.kind === WagerTransactionKind.Rollback) {
+      const reference = [...this.transactions.values()].find(
+        ({ transaction: existing }) =>
+          existing.providerId === transaction.providerId &&
+          existing.externalTransactionId ===
+            transaction.referenceExternalTransactionId,
+      )?.transaction;
+      const alreadyRolledBack = [...this.transactions.values()].some(
+        ({ transaction: existing }) =>
+          existing.kind === WagerTransactionKind.Rollback &&
+          existing.referenceExternalTransactionId ===
+            transaction.referenceExternalTransactionId &&
+          existing.status === 'PROCESSED',
+      );
+
+      if (!reference) {
+        transaction.markPendingReference();
+      } else if (
+        reference.status !== 'PROCESSED' ||
+        (reference.kind !== WagerTransactionKind.Bet &&
+          reference.kind !== WagerTransactionKind.Win &&
+          reference.kind !== WagerTransactionKind.Refund) ||
+        reference.walletId !== transaction.walletId ||
+        reference.playerId !== transaction.playerId ||
+        reference.roundId !== transaction.roundId
+      ) {
+        transaction.reject('INVALID_REFERENCE');
+      } else if (!reference.money.equals(transaction.money)) {
+        transaction.reject('ROLLBACK_AMOUNT_MISMATCH');
+      } else if (alreadyRolledBack) {
+        transaction.reject('REFERENCE_ALREADY_ROLLED_BACK');
+      } else {
+        transaction.markProcessed(reference.id, new Date());
+      }
+
+      const result = {
+        transaction,
+        balance: Money.from({ amount: '1000.00', currency: 'BRL' }),
+        idempotentReplay: false,
+      };
+      this.transactions.set(key, result);
+
+      return result;
+    }
+
     if (transaction.kind === WagerTransactionKind.Refund) {
       const reference = [...this.transactions.values()].find(
         ({ transaction: existing }) =>
@@ -238,6 +283,12 @@ describe('Wagering transactions HTTP (e2e)', () => {
       .set('Idempotency-Key', 'provider-a:refund-without-reference')
       .send({ ...body, kind: 'REFUND' })
       .expect(400);
+
+    await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', 'provider-a:rollback-without-reference')
+      .send({ ...body, kind: 'ROLLBACK' })
+      .expect(400);
   });
 
   it('processes WIN and LOSS and leaves referenced WIN pending when its BET is absent', async () => {
@@ -420,6 +471,61 @@ describe('Wagering transactions HTTP (e2e)', () => {
         expect(body).toMatchObject({
           status: 'REJECTED',
           failureCode: 'REFERENCE_ALREADY_REFUNDED',
+        });
+      });
+  });
+
+  it('accepts ROLLBACK and rejects a second rollback of the same reference', async () => {
+    const walletId = randomUUID();
+    const playerId = randomUUID();
+    const bet = {
+      providerId: 'provider-a',
+      externalTransactionId: 'rollback-bet-http',
+      playerId,
+      walletId,
+      roundId: 'round-987',
+      gameId: 'fortune-chimp',
+      kind: 'BET',
+      money: { amount: '25.00', currency: 'BRL' },
+    };
+
+    await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', 'provider-a:rollback-bet-http')
+      .send(bet)
+      .expect(200);
+
+    const rollback = {
+      ...bet,
+      externalTransactionId: 'rollback-http',
+      kind: 'ROLLBACK',
+      referenceExternalTransactionId: 'rollback-bet-http',
+    };
+
+    await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', 'provider-a:rollback-http')
+      .send(rollback)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body).toMatchObject({
+          status: 'PROCESSED',
+          idempotentReplay: false,
+        });
+      });
+
+    await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', 'provider-a:rollback-http-duplicate')
+      .send({
+        ...rollback,
+        externalTransactionId: 'rollback-http-duplicate',
+      })
+      .expect(422)
+      .expect(({ body }) => {
+        expect(body).toMatchObject({
+          status: 'REJECTED',
+          failureCode: 'REFERENCE_ALREADY_ROLLED_BACK',
         });
       });
   });

@@ -603,6 +603,339 @@ describe('PostgreSQL migrations and integrity constraints', () => {
     ).toEqual([{ count: 0 }]);
   });
 
+  it('rolls back a processed BET exactly once under concurrent requests', async () => {
+    const wallet = await insertWallet({ balance: '75.00' });
+    const repository = new MikroOrmProcessWagerTransactionsRepository(
+      orm.em.fork({ clear: true }),
+    );
+    const bet = await new ProcessBetUseCase(repository).execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'rollback-bet-reference',
+      idempotencyKey: 'provider-a:rollback-bet-reference',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    });
+    const rollbackRequest = {
+      providerId: 'provider-a',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      kind: WagerTransactionKind.Rollback,
+      referenceExternalTransactionId: 'rollback-bet-reference',
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    };
+
+    const results = await Promise.all([
+      new ProcessWagerTransactionUseCase(repository).execute({
+        ...rollbackRequest,
+        externalTransactionId: 'rollback-bet-first',
+        idempotencyKey: 'provider-a:rollback-bet-first',
+      }),
+      new ProcessWagerTransactionUseCase(repository).execute({
+        ...rollbackRequest,
+        externalTransactionId: 'rollback-bet-second',
+        idempotencyKey: 'provider-a:rollback-bet-second',
+      }),
+    ]);
+    const processed = results.find(
+      ({ transaction }) => transaction.status === 'PROCESSED',
+    );
+    const rejected = results.find(
+      ({ transaction }) => transaction.status === 'REJECTED',
+    );
+
+    expect(processed?.transaction.referenceTransactionId).toBe(
+      bet.transaction.id,
+    );
+    expect(rejected?.transaction.failureCode).toBe(
+      'REFERENCE_ALREADY_ROLLED_BACK',
+    );
+    expect(processed?.balance.toString()).toBe('75.00');
+    expect(rejected?.balance.toString()).toBe('75.00');
+    expect(
+      await execute(
+        'select "balance", "version" from "wallets" where "id" = ?',
+        [wallet.id],
+      ),
+    ).toEqual([{ balance: '75.00', version: 3 }]);
+    expect(
+      await execute(
+        `select "direction", "amount", "balance_before", "balance_after"
+         from "wallet_ledger_entries" where "transaction_id" = ?`,
+        [processed?.transaction.id],
+      ),
+    ).toEqual([
+      {
+        direction: 'CREDIT',
+        amount: '25.00',
+        balance_before: '50.00',
+        balance_after: '75.00',
+      },
+    ]);
+    expect(
+      await execute(
+        `select count(*)::int as "count"
+         from "wallet_ledger_entries"
+         where "transaction_id" = ?`,
+        [rejected?.transaction.id],
+      ),
+    ).toEqual([{ count: 0 }]);
+  });
+
+  it('rolls back WIN and REFUND with inverse ledger directions', async () => {
+    const wallet = await insertWallet({ balance: '75.00' });
+    const repository = new MikroOrmProcessWagerTransactionsRepository(
+      orm.em.fork({ clear: true }),
+    );
+    const processTransaction = new ProcessWagerTransactionUseCase(repository);
+    await new ProcessBetUseCase(repository).execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'rollback-refund-bet',
+      idempotencyKey: 'provider-a:rollback-refund-bet',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    });
+    const win = await processTransaction.execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'rollback-win-reference',
+      idempotencyKey: 'provider-a:rollback-win-reference',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      kind: WagerTransactionKind.Win,
+      money: Money.from({ amount: '10.00', currency: 'BRL' }),
+    });
+    const rollbackWin = await processTransaction.execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'rollback-win-operation',
+      idempotencyKey: 'provider-a:rollback-win-operation',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      kind: WagerTransactionKind.Rollback,
+      referenceExternalTransactionId: 'rollback-win-reference',
+      money: Money.from({ amount: '10.00', currency: 'BRL' }),
+    });
+    const refund = await processTransaction.execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'rollback-refund-operation',
+      idempotencyKey: 'provider-a:rollback-refund-operation',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      kind: WagerTransactionKind.Refund,
+      referenceExternalTransactionId: 'rollback-refund-bet',
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    });
+    const rollbackRefund = await processTransaction.execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'rollback-refund-rollback',
+      idempotencyKey: 'provider-a:rollback-refund-rollback',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      kind: WagerTransactionKind.Rollback,
+      referenceExternalTransactionId: 'rollback-refund-operation',
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    });
+
+    expect(rollbackWin.transaction.status).toBe('PROCESSED');
+    expect(rollbackWin.transaction.referenceTransactionId).toBe(win.transaction.id);
+    expect(rollbackRefund.transaction.status).toBe('PROCESSED');
+    expect(rollbackRefund.transaction.referenceTransactionId).toBe(
+      refund.transaction.id,
+    );
+    expect(rollbackRefund.balance.toString()).toBe('50.00');
+    expect(
+      await execute(
+        'select "balance", "version" from "wallets" where "id" = ?',
+        [wallet.id],
+      ),
+    ).toEqual([{ balance: '50.00', version: 6 }]);
+    expect(
+      await execute(
+        `select "direction", "balance_before", "balance_after"
+         from "wallet_ledger_entries" where "transaction_id" = ?`,
+        [rollbackWin.transaction.id],
+      ),
+    ).toEqual([
+      {
+        direction: 'DEBIT',
+        balance_before: '60.00',
+        balance_after: '50.00',
+      },
+    ]);
+    expect(
+      await execute(
+        `select "direction", "balance_before", "balance_after"
+         from "wallet_ledger_entries" where "transaction_id" = ?`,
+        [rollbackRefund.transaction.id],
+      ),
+    ).toEqual([
+      {
+        direction: 'DEBIT',
+        balance_before: '75.00',
+        balance_after: '50.00',
+      },
+    ]);
+  });
+
+  it('keeps ROLLBACK pending for an absent reference and rejects insufficient inverse balance', async () => {
+    const wallet = await insertWallet({ balance: '10.00' });
+    const repository = new MikroOrmProcessWagerTransactionsRepository(
+      orm.em.fork({ clear: true }),
+    );
+    const processTransaction = new ProcessWagerTransactionUseCase(repository);
+    const pending = await processTransaction.execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'rollback-pending',
+      idempotencyKey: 'provider-a:rollback-pending',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      kind: WagerTransactionKind.Rollback,
+      referenceExternalTransactionId: 'rollback-missing-reference',
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    });
+    const win = await processTransaction.execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'rollback-insufficient-win',
+      idempotencyKey: 'provider-a:rollback-insufficient-win',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      kind: WagerTransactionKind.Win,
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    });
+    await new ProcessBetUseCase(repository).execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'rollback-insufficient-bet',
+      idempotencyKey: 'provider-a:rollback-insufficient-bet',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    });
+    const rejected = await processTransaction.execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'rollback-insufficient-operation',
+      idempotencyKey: 'provider-a:rollback-insufficient-operation',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      kind: WagerTransactionKind.Rollback,
+      referenceExternalTransactionId: 'rollback-insufficient-win',
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    });
+
+    expect(pending.transaction.status).toBe('PENDING_REFERENCE');
+    expect(rejected.transaction.status).toBe('REJECTED');
+    expect(rejected.transaction.failureCode).toBe(
+      'ROLLBACK_INSUFFICIENT_FUNDS',
+    );
+    expect(rejected.transaction.referenceTransactionId).toBeUndefined();
+    expect(rejected.balance.toString()).toBe('10.00');
+    expect(win.transaction.status).toBe('PROCESSED');
+    expect(
+      await execute(
+        'select "balance", "version" from "wallets" where "id" = ?',
+        [wallet.id],
+      ),
+    ).toEqual([{ balance: '10.00', version: 3 }]);
+    expect(
+      await execute(
+        `select count(*)::int as "count"
+         from "wallet_ledger_entries"
+         where "transaction_id" = ?`,
+        [rejected.transaction.id],
+      ),
+    ).toEqual([{ count: 0 }]);
+  });
+
+  it('rejects ROLLBACK for an ineligible reference or a different amount', async () => {
+    const wallet = await insertWallet({ balance: '75.00' });
+    const repository = new MikroOrmProcessWagerTransactionsRepository(
+      orm.em.fork({ clear: true }),
+    );
+    const processTransaction = new ProcessWagerTransactionUseCase(repository);
+    await new ProcessBetUseCase(repository).execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'rollback-invalid-bet',
+      idempotencyKey: 'provider-a:rollback-invalid-bet',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    });
+    await processTransaction.execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'rollback-ineligible-loss',
+      idempotencyKey: 'provider-a:rollback-ineligible-loss',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      kind: WagerTransactionKind.Loss,
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    });
+    const wrongAmount = await processTransaction.execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'rollback-wrong-amount',
+      idempotencyKey: 'provider-a:rollback-wrong-amount',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      kind: WagerTransactionKind.Rollback,
+      referenceExternalTransactionId: 'rollback-invalid-bet',
+      money: Money.from({ amount: '24.99', currency: 'BRL' }),
+    });
+    const ineligibleReference = await processTransaction.execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'rollback-loss-reference',
+      idempotencyKey: 'provider-a:rollback-loss-reference',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      kind: WagerTransactionKind.Rollback,
+      referenceExternalTransactionId: 'rollback-ineligible-loss',
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    });
+
+    expect(wrongAmount.transaction.status).toBe('REJECTED');
+    expect(wrongAmount.transaction.failureCode).toBe(
+      'ROLLBACK_AMOUNT_MISMATCH',
+    );
+    expect(ineligibleReference.transaction.status).toBe('REJECTED');
+    expect(ineligibleReference.transaction.failureCode).toBe(
+      'INVALID_REFERENCE',
+    );
+    expect(ineligibleReference.balance.toString()).toBe('50.00');
+    expect(
+      await execute(
+        'select "balance", "version" from "wallets" where "id" = ?',
+        [wallet.id],
+      ),
+    ).toEqual([{ balance: '50.00', version: 2 }]);
+  });
+
   it('audits an insufficient-funds BET without changing the wallet or ledger', async () => {
     const wallet = await insertWallet({ balance: '10.00' });
     const result = await new ProcessBetUseCase(

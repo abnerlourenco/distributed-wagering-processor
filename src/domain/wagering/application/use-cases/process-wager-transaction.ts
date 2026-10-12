@@ -18,7 +18,8 @@ export interface ProcessWagerTransactionRequest {
     | WagerTransactionKind.Bet
     | WagerTransactionKind.Win
     | WagerTransactionKind.Loss
-    | WagerTransactionKind.Refund;
+    | WagerTransactionKind.Refund
+    | WagerTransactionKind.Rollback;
   money: Money;
   referenceExternalTransactionId?: string;
 }
