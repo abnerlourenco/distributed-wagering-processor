@@ -3,6 +3,7 @@ x-app: &app
     context: .
   image: distributed-wagering-processor:local
   restart: unless-stopped
+  stop_grace_period: 30s
   env_file:
     - .env
   environment:
