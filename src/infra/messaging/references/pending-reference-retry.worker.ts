@@ -1,3 +1,4 @@
+
 import {
   Injectable,
   Logger,
@@ -18,6 +19,7 @@ export class PendingReferenceRetryWorker
 {
   private readonly logger = new Logger(PendingReferenceRetryWorker.name);
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private inFlight: Promise<void> | undefined;
   private stopped = false;
 
   constructor(
@@ -29,28 +31,42 @@ export class PendingReferenceRetryWorker
     this.schedule(0);
   }
 
-  onApplicationShutdown(): void {
+  async onApplicationShutdown(): Promise<void> {
     this.stopped = true;
+
     if (this.timer) {
       clearTimeout(this.timer);
+      this.timer = undefined;
     }
+
+    await this.inFlight;
   }
 
   private schedule(delayMs: number): void {
-    if (this.stopped) {
+    if (this.stopped || this.timer) {
       return;
     }
 
     this.timer = setTimeout(() => {
       this.timer = undefined;
-      void this.retryCycle();
+
+      const cycle = this.retryCycle();
+      this.inFlight = cycle;
+
+      void cycle.finally(() => {
+        if (this.inFlight === cycle) {
+          this.inFlight = undefined;
+        }
+      });
     }, delayMs);
   }
 
   private async retryCycle(): Promise<void> {
     let nextDelay = POLL_INTERVAL_MS;
+
     try {
       const dueTransactions = await this.repository.claimDue(BATCH_SIZE);
+
       for (const transaction of dueTransactions) {
         if (this.stopped) {
           break;
@@ -78,6 +94,7 @@ export class PendingReferenceRetryWorker
         } catch (error) {
           const errorName =
             error instanceof Error ? error.name : 'UnknownRetryError';
+
           this.logger.error(
             `Pending reference retry failed for transaction ${transaction.id} (${errorName})`,
           );
@@ -86,7 +103,11 @@ export class PendingReferenceRetryWorker
     } catch (error) {
       const errorName =
         error instanceof Error ? error.name : 'UnknownRetryWorkerError';
-      this.logger.error(`Pending reference retry cycle failed (${errorName})`);
+
+      this.logger.error(
+        `Pending reference retry cycle failed (${errorName})`,
+      );
+
       nextDelay = ERROR_DELAY_MS;
     } finally {
       this.schedule(nextDelay);
