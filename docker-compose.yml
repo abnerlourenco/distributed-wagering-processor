@@ -1,3 +1,25 @@
+x-app: &app
+  build:
+    context: .
+  image: distributed-wagering-processor:local
+  restart: unless-stopped
+  env_file:
+    - .env
+  environment:
+    NODE_ENV: production
+    PORT: "3000"
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: "5432"
+    LOCALSTACK_ENDPOINT: http://localstack:4566
+    AWS_REGION: us-east-1
+    AWS_ACCESS_KEY_ID: test
+    AWS_SECRET_ACCESS_KEY: test
+  depends_on:
+    postgres:
+      condition: service_healthy
+    localstack:
+      condition: service_healthy
+
 services:
   postgres:
     image: postgres:18-alpine
@@ -41,6 +63,21 @@ services:
       retries: 20
       start_period: 10s
 
+  app1:
+    <<: *app
+    ports:
+      - "3001:3000"
+
+  app2:
+    <<: *app
+    ports:
+      - "3002:3000"
+
+  app3:
+    <<: *app
+    ports:
+      - "3003:3000"
+
+
 volumes:
   postgres-data:
-  
