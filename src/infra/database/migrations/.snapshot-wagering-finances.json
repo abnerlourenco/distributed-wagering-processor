@@ -1504,7 +1504,18 @@
           "columnName": "direction"
         }
       ],
-      "triggers": [],
+      "triggers": [
+        {
+          "name": "wallet_ledger_entries_immutable",
+          "timing": "before",
+          "events": [
+            "delete",
+            "update"
+          ],
+          "forEach": "row",
+          "body": ""
+        }
+      ],
       "foreignKeys": {
         "wallet_ledger_entries_transaction_wallet_currency_foreign": {
           "columnNames": [

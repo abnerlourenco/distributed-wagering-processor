@@ -1636,4 +1636,54 @@ describe('PostgreSQL migrations and integrity constraints', () => {
       wallets: 'wallets',
     });
   });
+
+  
+  it('prevents updating an existing ledger entry', async () => {
+    const wallet = await insertWallet({ balance: '100.00' });
+    const transactionId = await insertWagerTransaction({
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+    });
+    const ledgerId = randomUUID();
+
+    await execute(
+      `insert into "wallet_ledger_entries" (
+        "id", "wallet_id", "transaction_id", "direction",
+        "amount", "currency", "balance_before", "balance_after"
+      ) values (?, ?, ?, 'CREDIT', '25.00', 'BRL', '100.00', '125.00')`,
+      [ledgerId, wallet.id, transactionId],
+    );
+
+    await expect(
+      execute(
+        'update "wallet_ledger_entries" set "amount" = ? where "id" = ?',
+        ['50.00', ledgerId],
+      ),
+    ).rejects.toThrow('wallet_ledger_entries_are_immutable');
+  });
+
+  it('prevents deleting an existing ledger entry', async () => {
+    const wallet = await insertWallet({ balance: '100.00' });
+    const transactionId = await insertWagerTransaction({
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+    });
+    const ledgerId = randomUUID();
+
+    await execute(
+      `insert into "wallet_ledger_entries" (
+        "id", "wallet_id", "transaction_id", "direction",
+        "amount", "currency", "balance_before", "balance_after"
+      ) values (?, ?, ?, 'CREDIT', '25.00', 'BRL', '100.00', '125.00')`,
+      [ledgerId, wallet.id, transactionId],
+    );
+
+    await expect(
+      execute(
+        'delete from "wallet_ledger_entries" where "id" = ?',
+        [ledgerId],
+      ),
+    ).rejects.toThrow('wallet_ledger_entries_are_immutable');
+  });
+
 });

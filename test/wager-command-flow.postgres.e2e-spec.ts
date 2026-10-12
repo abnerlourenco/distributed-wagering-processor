@@ -108,68 +108,17 @@ describe('Wager commands through PostgreSQL and LocalStack', () => {
   });
 
   afterEach(async () => {
-    if (walletId) {
-      await orm.em.getConnection().execute(
-        `delete from "inbox_messages"
-         where "consumer_name" = 'wager-transaction-command-consumer'
-           and "source" = 'wager-transactions.fifo'
-           and "message_id" in (
-             select "id"::text from "outbox_messages"
-             where "event_type" = 'WagerTransactionRequested'
-               and "aggregate_id" = ?
-           )`,
-        [walletId],
-      );
-    }
-    if (eventQueueName && transactionIds.length > 0) {
-      const transactionPlaceholders = transactionIds.map(() => '?').join(', ');
-      await orm.em.getConnection().execute(
-        `delete from "inbox_messages"
-           where "consumer_name" = 'wagering-outbox-event-consumer'
-             and "source" = ?
-           and "message_id" in (
-               select "id"::text from "outbox_messages"
-               where "event_type" in (
-                 'WagerTransactionProcessed',
-                 'WagerTransactionRejected'
-               )
-                 and "aggregate_id" in (${transactionPlaceholders})
-             )`,
-        [eventQueueName, ...transactionIds],
-      );
-    }
-    if (walletId) {
-      await orm.em
-        .getConnection()
-        .execute('delete from "wallet_ledger_entries" where "wallet_id" = ?', [
-          walletId,
-        ]);
-      await orm.em
-        .getConnection()
-        .execute('delete from "wager_transactions" where "wallet_id" = ?', [
-          walletId,
-        ]);
-      await orm.em
-        .getConnection()
-        .execute('delete from "wallets" where "id" = ?', [walletId]);
-      await orm.em.getConnection().execute(
-        `delete from "outbox_messages"
-         where "aggregate_type" = 'wager-wallet' and "aggregate_id" = ?`,
-        [walletId],
-      );
-      if (transactionIds.length > 0) {
-        const transactionPlaceholders = transactionIds
-          .map(() => '?')
-          .join(', ');
-        await orm.em.getConnection().execute(
-          `delete from "outbox_messages"
-           where "aggregate_type" = 'wager-transaction'
-             and "aggregate_id" in (${transactionPlaceholders})`,
-          transactionIds,
-        );
-      }
-      walletId = undefined;
-    }
+    await orm.em.getConnection().execute(`
+      TRUNCATE TABLE
+        outbox_messages,
+        inbox_messages,
+        wallet_ledger_entries,
+        wager_transactions,
+        wallets
+      RESTART IDENTITY CASCADE;
+    `);
+
+    walletId = undefined;
     transactionIds.length = 0;
   });
 
