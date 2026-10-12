@@ -28,9 +28,10 @@ services:
       LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:?Configure LOCALSTACK_AUTH_TOKEN in .env}
       SERVICES: sqs
       DEFAULT_REGION: us-east-1
-      SQS_QUEUE_NAME: wagering-events
     ports:
       - "4566:4566"
+    volumes:
+      - ./localstack/init/ready.d:/etc/localstack/init/ready.d:ro
     healthcheck:
       test:
         - CMD-SHELL
@@ -42,3 +43,4 @@ services:
 
 volumes:
   postgres-data:
+  

@@ -456,6 +456,112 @@ describe('Wager commands through PostgreSQL and LocalStack', () => {
     }
   });
 
+  
+  it('moves a poison event to its DLQ without acknowledging it', async () => {
+    if (!client) {
+      throw new Error('LocalStack client is unavailable');
+    }
+
+    const sourceQueueName = `wager-event-poison-${randomUUID()}`;
+    const deadLetterQueueName = `wager-event-poison-dlq-${randomUUID()}`;
+
+    let sourceQueueUrl: string | undefined;
+    let deadLetterQueueUrl: string | undefined;
+
+    try {
+      const deadLetterQueue = await client.send(
+        new CreateQueueCommand({
+          QueueName: deadLetterQueueName,
+          Attributes: {
+            MessageRetentionPeriod: '1209600',
+          },
+        }),
+      );
+
+      deadLetterQueueUrl = deadLetterQueue.QueueUrl;
+
+      if (!deadLetterQueueUrl) {
+        throw new Error('LocalStack did not return the event DLQ URL');
+      }
+
+      const attributes = await client.send(
+        new GetQueueAttributesCommand({
+          QueueUrl: deadLetterQueueUrl,
+          AttributeNames: ['QueueArn'],
+        }),
+      );
+
+      const deadLetterQueueArn = attributes.Attributes?.QueueArn;
+
+      if (!deadLetterQueueArn) {
+        throw new Error('LocalStack did not return the event DLQ ARN');
+      }
+
+      const sourceQueue = await client.send(
+        new CreateQueueCommand({
+          QueueName: sourceQueueName,
+          Attributes: {
+            VisibilityTimeout: '0',
+            RedrivePolicy: JSON.stringify({
+              deadLetterTargetArn: deadLetterQueueArn,
+              maxReceiveCount: '2',
+            }),
+          },
+        }),
+      );
+
+      sourceQueueUrl = sourceQueue.QueueUrl;
+
+      if (!sourceQueueUrl) {
+        throw new Error('LocalStack did not return the source queue URL');
+      }
+
+      await adapter.sendMessage(sourceQueueUrl, '{}');
+
+      const poisonConsumer = new OutboxEventConsumer(
+        new MikroOrmInboxConsumerRepository(orm.em),
+        adapter,
+        sourceQueueName,
+        1,
+      );
+
+      let rejectedAttempts = 0;
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        try {
+          const consumed = await poisonConsumer.consumeOne();
+
+          if (!consumed) {
+            break;
+          }
+        } catch {
+          rejectedAttempts += 1;
+        }
+      }
+
+      expect(rejectedAttempts).toBeGreaterThan(0);
+
+      const deadLetter = await adapter.receiveMessage(
+        deadLetterQueueUrl,
+        1,
+      );
+
+      expect(deadLetter?.body).toBe('{}');
+    } finally {
+      if (sourceQueueUrl) {
+        await client.send(
+          new DeleteQueueCommand({ QueueUrl: sourceQueueUrl }),
+        );
+      }
+
+      if (deadLetterQueueUrl) {
+        await client.send(
+          new DeleteQueueCommand({ QueueUrl: deadLetterQueueUrl }),
+        );
+      }
+    }
+  });
+
   it('marks an accepted operation FAILED after the Outbox publication limit', async () => {
     const playerId = randomUUID();
     const { wallet } = await new OpenWalletUseCase(
