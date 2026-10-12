@@ -9,9 +9,10 @@ import type {
   ProcessWagerTransactionResult,
   ProcessWagerTransactionsRepository,
 } from '../src/domain/wagering/application/repositories/process-wager-transactions-repository.js';
+import type { QueueWagerTransactionsRepository } from '../src/domain/wagering/application/repositories/queue-wager-transactions-repository.js';
 import type { WagerTransactionQueriesRepository } from '../src/domain/wagering/application/repositories/wager-transaction-queries-repository.js';
 import { GetWagerTransactionUseCase } from '../src/domain/wagering/application/use-cases/get-wager-transaction.js';
-import { ProcessWagerTransactionUseCase } from '../src/domain/wagering/application/use-cases/process-wager-transaction.js';
+import { QueueWagerTransactionUseCase } from '../src/domain/wagering/application/use-cases/queue-wager-transaction.js';
 import {
   WagerTransaction,
   WagerTransactionKind,
@@ -21,8 +22,12 @@ import { WageringTransactionsController } from '../src/infra/http/controllers/wa
 import { WagerTransactionQueriesController } from '../src/infra/http/controllers/wager-transaction-queries.controller.js';
 
 class InMemoryProcessWagerTransactionsRepository
-  implements ProcessWagerTransactionsRepository, WagerTransactionQueriesRepository
+  implements
+    ProcessWagerTransactionsRepository,
+    QueueWagerTransactionsRepository,
+    WagerTransactionQueriesRepository
 {
+  autoProcessQueuedTransactions = true;
   private readonly transactions = new Map<
     string,
     ProcessWagerTransactionResult
@@ -168,8 +173,7 @@ class InMemoryProcessWagerTransactionsRepository
       const result = {
         transaction,
         balance: Money.from({
-          amount:
-            transaction.status === 'PROCESSED' ? '1000.00' : '975.00',
+          amount: transaction.status === 'PROCESSED' ? '1000.00' : '975.00',
           currency: 'BRL',
         }),
         idempotentReplay: false,
@@ -209,6 +213,28 @@ class InMemoryProcessWagerTransactionsRepository
 
     return result;
   }
+
+  async enqueue(transaction: WagerTransaction) {
+    if (!this.autoProcessQueuedTransactions) {
+      const result = {
+        transaction,
+        balance: Money.from({ amount: '1000.00', currency: 'BRL' }),
+        idempotentReplay: false,
+      };
+      this.transactions.set(
+        `${transaction.providerId}:${transaction.idempotencyKey}`,
+        result,
+      );
+      return { transaction, idempotentReplay: false };
+    }
+
+    const result = await this.process(transaction);
+    return {
+      transaction: result.transaction,
+      idempotentReplay: result.idempotentReplay,
+      balance: result.balance,
+    };
+  }
 }
 
 describe('Wagering transactions HTTP (e2e)', () => {
@@ -224,8 +250,8 @@ describe('Wagering transactions HTTP (e2e)', () => {
       ],
       providers: [
         {
-          provide: ProcessWagerTransactionUseCase,
-          useFactory: () => new ProcessWagerTransactionUseCase(repository),
+          provide: QueueWagerTransactionUseCase,
+          useFactory: () => new QueueWagerTransactionUseCase(repository),
         },
         {
           provide: GetWagerTransactionUseCase,
@@ -320,6 +346,42 @@ describe('Wagering transactions HTTP (e2e)', () => {
     await request(app.getHttpServer())
       .get('/providers/provider-a/wagering/transactions/not-found')
       .expect(404);
+  });
+
+  it('accepts queued transactions with 202 while they are pending', async () => {
+    repository.autoProcessQueuedTransactions = false;
+    try {
+      const accepted = await request(app.getHttpServer())
+        .post('/wagering/transactions')
+        .set('Idempotency-Key', 'provider-a:queued-transaction')
+        .send({
+          providerId: 'provider-a',
+          externalTransactionId: 'queued-transaction',
+          playerId: randomUUID(),
+          walletId: randomUUID(),
+          roundId: 'round-queued',
+          gameId: 'fortune-chimp',
+          kind: 'BET',
+          money: { amount: '1.00', currency: 'BRL' },
+        })
+        .expect(202);
+
+      expect(accepted.body).toMatchObject({
+        status: 'PENDING',
+        idempotentReplay: false,
+      });
+      expect(accepted.body.transactionId).toBeTruthy();
+      expect(accepted.body.balance).toBeUndefined();
+
+      await request(app.getHttpServer())
+        .get(`/wagering/transactions/${accepted.body.transactionId}`)
+        .expect(200)
+        .expect(({ body }) => {
+          expect(body.status).toBe('PENDING');
+        });
+    } finally {
+      repository.autoProcessQueuedTransactions = true;
+    }
   });
 
   it('requires an idempotency key and rejects unsupported transaction kinds', async () => {
