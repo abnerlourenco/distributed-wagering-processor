@@ -1715,8 +1715,23 @@ describe('Wager commands through PostgreSQL and LocalStack', () => {
       // Primeira entrega: processa a aposta, mas falha ao confirmar o ACK.
       expect(await testConsumer.consumeOne()).toBe(true);
 
-      // Segunda entrega: deve reconhecer a operação já processada.
-      expect(await testConsumer.consumeOne()).toBe(true);
+      // Simula a reinicialização do consumidor.
+      // A nova instância não possui o estado em memória da anterior.
+      const restartedConsumer = new WagerCommandConsumer(
+        new ProcessWagerTransactionUseCase(
+          new MikroOrmProcessWagerTransactionsRepository(orm.em),
+        ),
+        new MikroOrmInboxConsumerRepository(orm.em),
+        adapter,
+        testQueueName,
+        1,
+      );
+
+      // Segunda entrega: a nova instância deve reconhecer
+      // que a operação financeira já foi processada.
+      expect(await restartedConsumer.consumeOne()).toBe(true);
+
+      restartedConsumer.stop();
 
       const balanceRows = await orm.em.getConnection().execute<
         Array<{ balance: string }>
