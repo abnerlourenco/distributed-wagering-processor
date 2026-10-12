@@ -1,124 +1,324 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Distributed Wagering Processor
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Processador distribuído de transações usando Bun, TypeScript, NestJS, PostgreSQL, MikroORM e AWS SQS via LocalStack.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Executar localmente
 
-## Description
+Requisitos: Bun 1.x, Docker e Docker Compose. 
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
+Configure seu token no [LocalStack](https://app.localstack.cloud/).
 
 ```bash
-$ bun install
+bun install
+cp .env.example .env
 ```
 
-## Compile and run the project
+No Windows PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Configure `LOCALSTACK_AUTH_TOKEN` no `.env`. Não versione esse arquivo.
 
 ```bash
-# development
-$ bun run start
-
-# watch mode
-$ bun run start:dev
-
-# production mode
-$ bun run start:prod
+docker compose up -d
+bun run migration:up
+bun run start:dev
 ```
 
-## Run tests
+API: `http://localhost:3000`.
+
+## Rotas
+
+### `POST /wallets`
+
+Cria uma carteira.
+
+**Body**
+```json
+{
+  "playerId": "550e8400-e29b-41d4-a716-446655440000",
+  "initialBalance": {
+    "amount": "1000.00",
+    "currency": "BRL"
+  }
+}
+```
+
+**Resposta `201 Created`**
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440001",
+  "playerId": "550e8400-e29b-41d4-a716-446655440000",
+  "balance": {
+    "amount": "1000.00",
+    "currency": "BRL"
+  },
+  "version": 1,
+  "createdAt": "2026-10-12T12:00:00.000Z",
+  "updatedAt": "2026-10-12T12:00:00.000Z"
+}
+```
+
+`409 Conflict` — carteira já existente para jogador e moeda:
+```json
+{
+  "message": "A wallet already exists for this player and currency"
+}
+```
+
+`400 Bad Request` — body inválido:
+```json
+{
+  "message": "Validation failed",
+  "issues": []
+}
+```
+
+O array `issues` contém os detalhes da validação que falhou.
+
+### `GET /wallets/:walletId`
+
+Consulta uma carteira.
+
+**Resposta `200 OK`**
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440001",
+  "playerId": "550e8400-e29b-41d4-a716-446655440000",
+  "balance": {
+    "amount": "1000.00",
+    "currency": "BRL"
+  },
+  "version": 1,
+  "createdAt": "2026-10-12T12:00:00.000Z",
+  "updatedAt": "2026-10-12T12:00:00.000Z"
+}
+```
+
+`404 Not Found`:
+```json
+{
+  "message": "Wallet not found"
+}
+```
+
+### `GET /wallets/:walletId/ledger`
+
+Consulta o histórico de lançamentos.
+
+**Query params**
+- `limit`: quantidade por página, de `1` a `100`; padrão `50`.
+- `cursor`: cursor retornado pela página anterior.
+
+Exemplo: `GET /wallets/550e8400-e29b-41d4-a716-446655440001/ledger?limit=20`
+
+**Resposta `200 OK`**
+```json
+{
+  "entries": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440002",
+      "walletId": "550e8400-e29b-41d4-a716-446655440001",
+      "transactionId": "550e8400-e29b-41d4-a716-446655440003",
+      "direction": "CREDIT",
+      "amount": {
+        "amount": "1000.00",
+        "currency": "BRL"
+      },
+      "balanceBefore": {
+        "amount": "0.00",
+        "currency": "BRL"
+      },
+      "balanceAfter": {
+        "amount": "1000.00",
+        "currency": "BRL"
+      },
+      "createdAt": "2026-10-12T12:00:00.000Z"
+    }
+  ],
+  "nextCursor": null
+}
+```
+
+`404 Not Found`:
+```json
+{
+  "message": "Wallet not found"
+}
+```
+
+### `POST /wallets/:walletId/reconciliation`
+
+Compara o saldo armazenado com o saldo calculado a partir do ledger.
+
+**Body:** nenhum.
+
+**Resposta `200 OK`**
+```json
+{
+  "walletId": "550e8400-e29b-41d4-a716-446655440001",
+  "storedBalance": {
+    "amount": "1000.00",
+    "currency": "BRL"
+  },
+  "calculatedBalance": {
+    "amount": "1000.00",
+    "currency": "BRL"
+  },
+  "difference": {
+    "amount": "0.00",
+    "currency": "BRL"
+  },
+  "consistent": true,
+  "checkedEntries": 1
+}
+```
+
+Se a carteira não existir, retorna `404 Not Found` com `{"message":"Wallet not found"}`.
+
+### `POST /wagering/transactions`
+
+Enfileira uma transação para processamento.
+
+**Header obrigatório**
+```http
+Idempotency-Key: bet-unique-001
+```
+
+**Body — exemplo BET**
+```json
+{
+  "providerId": "provider-001",
+  "externalTransactionId": "bet-001",
+  "playerId": "550e8400-e29b-41d4-a716-446655440000",
+  "walletId": "550e8400-e29b-41d4-a716-446655440001",
+  "roundId": "round-001",
+  "gameId": "game-001",
+  "kind": "BET",
+  "money": {
+    "amount": "25.00",
+    "currency": "BRL"
+  }
+}
+```
+
+Tipos aceitos em `kind`: `BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`.
+
+Para `REFUND` e `ROLLBACK`, inclua `referenceExternalTransactionId` com o identificador externo da transação referenciada. Esse campo também é aceito para `WIN`.
+
+**Resposta `202 Accepted` — processamento pendente**
+```json
+{
+  "transactionId": "550e8400-e29b-41d4-a716-446655440003",
+  "status": "PENDING",
+  "idempotentReplay": false
+}
+```
+
+**Resposta `200 OK` — resultado já processado**
+```json
+{
+  "transactionId": "550e8400-e29b-41d4-a716-446655440003",
+  "status": "PROCESSED",
+  "balance": {
+    "amount": "975.00",
+    "currency": "BRL"
+  },
+  "idempotentReplay": false
+}
+```
+
+**Resposta `422 Unprocessable Entity` — transação rejeitada**
+```json
+{
+  "transactionId": "550e8400-e29b-41d4-a716-446655440003",
+  "status": "REJECTED",
+  "failureCode": "INSUFFICIENT_FUNDS",
+  "idempotentReplay": false
+}
+```
+
+**Possíveis erros HTTP**
+
+| Código | Mensagem | Motivo |
+|---|---|---|
+| `400` | `Validation failed` | Body ou header inválido; inclui `issues` |
+| `400` | `Wager transaction amount must be positive` | Valor não positivo |
+| `400` | `REFUND requires a referenced external transaction id` | Referência obrigatória ausente |
+| `400` | `ROLLBACK requires a referenced external transaction id` | Referência obrigatória ausente |
+| `404` | `Wallet not found` | Carteira inexistente ou incompatível com jogador/moeda |
+| `409` | `IdempotencyKey was already used with a different payload` | Mesma chave com conteúdo diferente |
+| `409` | `Wager transaction already exists for this provider and external transaction id` | ID externo já utilizado |
+| `500` | `Internal server error` | Erro inesperado |
+
+**Possíveis `failureCode` de transação rejeitada**
+
+- `INSUFFICIENT_FUNDS`
+- `INVALID_REFERENCE`
+- `REFUND_AMOUNT_MISMATCH`
+- `REFERENCE_ALREADY_REFUNDED`
+- `ROLLBACK_AMOUNT_MISMATCH`
+- `REFERENCE_ALREADY_ROLLED_BACK`
+- `REFERENCE_TRANSACTION_NOT_FOUND`
+- `ROLLBACK_INSUFFICIENT_FUNDS`
+
+Esses códigos são retornados no campo `failureCode` quando a transação é rejeitada. Nem toda rejeição é um erro HTTP de validação.
+
+### `GET /health/live`
+
+**Resposta `200 OK`**
+```json
+{
+  "status": "alive"
+}
+```
+
+### `GET /health/ready`
+
+Verifica a conectividade com o PostgreSQL.
+
+**Resposta `200 OK`**
+```json
+{
+  "status": "ready",
+  "checks": {
+    "database": "up"
+  }
+}
+```
+
+**Resposta `503 Service Unavailable`**
+```json
+{
+  "status": "not_ready",
+  "checks": {
+    "database": "down"
+  }
+}
+```
+
+## Fluxo
+
+```mermaid
+flowchart TD
+    Client[Cliente] --> API[NestJS API]
+    API --> Wallets[Rotas de carteiras]
+    API --> Transactions[POST /wagering/transactions]
+    API --> Health[Rotas de health]
+    Transactions --> DB[(PostgreSQL)]
+    DB --> Outbox[Outbox]
+    Outbox --> SQS[AWS SQS / LocalStack]
+    SQS --> Worker[Worker de transações]
+    Worker --> DB
+```
+
+## Testes
 
 ```bash
-# unit tests
-$ bun run test
-
-# e2e tests
-$ bun run test:e2e
-
-# test coverage
-$ bun run test:cov
+bun run test
+bun run test:e2e
 ```
 
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ bun install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Observability
-
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
-
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
-
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
-
-To add it to this project:
-
-```bash
-$ bun install @nestjs/observe
-```
-
-Then follow the [setup guide](https://docs.nestjs.com/observability/overview) - it takes a single import and an app key.
-
-The free plan needs no payment details and covers 300,000 events a month. You can also browse the [live demo](https://www.observe-demo.nestjs.com/dashboard) first - the whole dashboard over a busy service's data, with nothing to install.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observe](https://observe.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+Os testes de integração precisam de PostgreSQL e LocalStack. Configure `POSTGRES_TEST_DATABASE_URL` para um banco de testes dedicado, nunca para o banco de desenvolvimento.
