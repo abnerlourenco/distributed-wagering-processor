@@ -995,6 +995,404 @@ describe('Wager commands through PostgreSQL and LocalStack', () => {
     ]);
   });
   
+  it('processes 50 concurrent duplicate BET requests only once', async () => {
+    const playerId = randomUUID();
+    const { wallet } = await new OpenWalletUseCase(
+      new MikroOrmWalletsRepository(orm.em),
+    ).execute({
+      playerId,
+      initialBalance: Money.from({
+        amount: '100.00',
+        currency: 'BRL',
+      }),
+    });
+
+    walletId = wallet.id;
+
+    const request = {
+      providerId: 'concurrency-provider',
+      externalTransactionId: 'concurrent-bet-001',
+      idempotencyKey: 'concurrent-bet-key-001',
+      walletId: wallet.id,
+      playerId,
+      roundId: 'concurrency-round',
+      gameId: 'integration-game',
+      kind: WagerTransactionKind.Bet,
+      money: Money.from({
+        amount: '10.00',
+        currency: 'BRL',
+      }),
+    };
+
+    const results = await Promise.all(
+      Array.from({ length: 50 }, () =>
+        new ProcessWagerTransactionUseCase(
+          new MikroOrmProcessWagerTransactionsRepository(
+            orm.em.fork({ clear: true }),
+          ),
+        ).execute(request),
+      ),
+    );
+
+    expect(
+      results.every((result) => result.transaction.status === 'PROCESSED'),
+    ).toBe(true);
+
+    expect(
+      new Set(results.map((result) => result.transaction.id)).size,
+    ).toBe(1);
+
+    expect(results.filter((result) => !result.idempotentReplay)).toHaveLength(1);
+    expect(results.filter((result) => result.idempotentReplay)).toHaveLength(49);
+
+    const transactionId = results[0]!.transaction.id;
+
+    const balanceRows = await orm.em.getConnection().execute<
+      Array<{ balance: string }>
+    >(
+      'select "balance" from "wallets" where "id" = ?',
+      [wallet.id],
+    );
+
+    expect(balanceRows).toEqual([{ balance: '90.00' }]);
+
+    const transactionRows = await orm.em.getConnection().execute<
+      Array<{ count: number }>
+    >(
+      `select count(*)::int as "count"
+      from "wager_transactions"
+      where "provider_id" = ?
+        and "external_transaction_id" = ?`,
+      [request.providerId, request.externalTransactionId],
+    );
+
+    expect(transactionRows).toEqual([{ count: 1 }]);
+
+    const ledgerRows = await orm.em.getConnection().execute<
+      Array<{ count: number }>
+    >(
+      `select count(*)::int as "count"
+      from "wallet_ledger_entries"
+      where "wallet_id" = ?
+        and "transaction_id" = ?`,
+      [wallet.id, transactionId],
+    );
+
+    expect(ledgerRows).toEqual([{ count: 1 }]);
+
+    const outboxRows = await orm.em.getConnection().execute<
+      Array<{ count: number }>
+    >(
+      `select count(*)::int as "count"
+      from "outbox_messages"
+      where "aggregate_id" = ?
+        and "event_type" = 'WagerTransactionProcessed'`,
+      [transactionId],
+    );
+
+    expect(outboxRows).toEqual([{ count: 1 }]);
+  });
+  
+  it('does not overspend a wallet when different BETs race concurrently', async () => {
+    const playerId = randomUUID();
+    const { wallet } = await new OpenWalletUseCase(
+      new MikroOrmWalletsRepository(orm.em),
+    ).execute({
+      playerId,
+      initialBalance: Money.from({
+        amount: '100.00',
+        currency: 'BRL',
+      }),
+    });
+
+    walletId = wallet.id;
+
+    const requests = Array.from({ length: 20 }, (_, index) => ({
+      providerId: 'concurrent-spending-provider',
+      externalTransactionId: `concurrent-spending-${index}`,
+      idempotencyKey: `concurrent-spending-key-${index}`,
+      walletId: wallet.id,
+      playerId,
+      roundId: 'concurrent-spending-round',
+      gameId: 'integration-game',
+      kind: WagerTransactionKind.Bet,
+      money: Money.from({
+        amount: '10.00',
+        currency: 'BRL',
+      }),
+    }));
+
+    const results = await Promise.all(
+      requests.map((request) =>
+        new ProcessWagerTransactionUseCase(
+          new MikroOrmProcessWagerTransactionsRepository(
+            orm.em.fork({ clear: true }),
+          ),
+        ).execute(request),
+      ),
+    );
+
+    const processed = results.filter(
+      (result) => result.transaction.status === 'PROCESSED',
+    );
+    const rejected = results.filter(
+      (result) => result.transaction.status === 'REJECTED',
+    );
+
+    expect(processed).toHaveLength(10);
+    expect(rejected).toHaveLength(10);
+
+    expect(
+      rejected.every(
+        (result) => result.transaction.failureCode === 'INSUFFICIENT_FUNDS',
+      ),
+    ).toBe(true);
+
+    const balanceRows = await orm.em.getConnection().execute<
+      Array<{ balance: string }>
+    >(
+      'select "balance" from "wallets" where "id" = ?',
+      [wallet.id],
+    );
+
+    expect(balanceRows).toEqual([{ balance: '0.00' }]);
+
+    const ledgerRows = await orm.em.getConnection().execute<
+      Array<{ count: number; total: string }>
+    >(
+      `select count(*)::int as "count",
+              coalesce(sum("amount"), 0)::text as "total"
+      from "wallet_ledger_entries"
+      where "wallet_id" = ?
+        and "transaction_id" in (
+          select "id"
+          from "wager_transactions"
+          where "provider_id" = ?
+            and "external_transaction_id" like 'concurrent-spending-%'
+        )`,
+      [wallet.id, 'concurrent-spending-provider'],
+    );
+
+    expect(ledgerRows).toEqual([{ count: 10, total: '100.00' }]);
+
+    const transactionRows = await orm.em.getConnection().execute<
+      Array<{ count: number }>
+    >(
+      `select count(*)::int as "count"
+      from "wager_transactions"
+      where "provider_id" = ?
+        and "external_transaction_id" like 'concurrent-spending-%'`,
+      ['concurrent-spending-provider'],
+    );
+
+    expect(transactionRows).toEqual([{ count: 20 }]);
+  });
+  
+  it('processes bets concurrently across different wallets', async () => {
+    const players = [
+      { playerId: randomUUID(), balance: '100.00' },
+      { playerId: randomUUID(), balance: '100.00' },
+    ];
+
+    const wallets = await Promise.all(
+      players.map(async ({ playerId, balance }) => {
+        const { wallet } = await new OpenWalletUseCase(
+          new MikroOrmWalletsRepository(orm.em.fork({ clear: true })),
+        ).execute({
+          playerId,
+          initialBalance: Money.from({
+            amount: balance,
+            currency: 'BRL',
+          }),
+        });
+
+        return wallet;
+      }),
+    );
+
+    // 20 apostas independentes: 10 para cada carteira.
+    const requests = Array.from({ length: 20 }, (_, index) => {
+      const walletIndex = index % 2;
+      const wallet = wallets[walletIndex];
+      const player = players[walletIndex];
+
+      return {
+        providerId: 'parallel-wallets-provider',
+        externalTransactionId: `parallel-wallet-${index}`,
+        idempotencyKey: `parallel-wallet-key-${index}`,
+        walletId: wallet.id,
+        playerId: player.playerId,
+        roundId: 'parallel-wallets-round',
+        gameId: 'integration-game',
+        kind: WagerTransactionKind.Bet,
+        money: Money.from({
+          amount: '10.00',
+          currency: 'BRL',
+        }),
+      };
+    });
+
+    const results = await Promise.all(
+      requests.map((request) =>
+        new ProcessWagerTransactionUseCase(
+          new MikroOrmProcessWagerTransactionsRepository(
+            orm.em.fork({ clear: true }),
+          ),
+        ).execute(request),
+      ),
+    );
+
+    expect(
+      results.filter((result) => result.transaction.status === 'PROCESSED'),
+    ).toHaveLength(20);
+
+    expect(
+      results.filter((result) => result.transaction.status === 'REJECTED'),
+    ).toHaveLength(0);
+
+    for (const wallet of wallets) {
+
+      const rows = await orm.em.getConnection().execute<
+        Array<{
+          balance: string;
+          ledger_count: number;
+          wager_ledger_count: number;
+        }>
+      >(
+        `select
+          w."balance",
+          (
+            select count(*)::int
+            from "wallet_ledger_entries" l
+            where l."wallet_id" = w."id"
+          ) as "ledger_count",
+          (
+            select count(*)::int
+            from "wallet_ledger_entries" l
+            join "wager_transactions" t
+              on t."id" = l."transaction_id"
+            where l."wallet_id" = w."id"
+              and t."provider_id" = ?
+              and t."external_transaction_id" like 'parallel-wallet-%'
+          ) as "wager_ledger_count"
+        from "wallets" w
+        where w."id" = ?`,
+        ['parallel-wallets-provider', wallet.id],
+      );
+
+      expect(rows).toEqual([
+        {
+          balance: '0.00',
+          ledger_count: 11,
+          wager_ledger_count: 10,
+        },
+      ]);
+
+    }
+  });
+  
+  it('does not refund the same BET twice under concurrent requests', async () => {
+    const playerId = randomUUID();
+    const providerId = 'concurrent-refund-provider';
+
+    const { wallet } = await new OpenWalletUseCase(
+      new MikroOrmWalletsRepository(orm.em.fork({ clear: true })),
+    ).execute({
+      playerId,
+      initialBalance: Money.from({
+        amount: '100.00',
+        currency: 'BRL',
+      }),
+    });
+
+    const process = (request: {
+      providerId: string;
+      externalTransactionId: string;
+      idempotencyKey: string;
+      walletId: string;
+      playerId: string;
+      roundId: string;
+      gameId: string;
+      kind: WagerTransactionKind;
+      money: Money;
+      referenceExternalTransactionId?: string;
+    }) =>
+      new ProcessWagerTransactionUseCase(
+        new MikroOrmProcessWagerTransactionsRepository(
+          orm.em.fork({ clear: true }),
+        ),
+      ).execute(request);
+
+    const bet = {
+      providerId,
+      externalTransactionId: 'refund-source-bet',
+      idempotencyKey: 'refund-source-bet-key',
+      walletId: wallet.id,
+      playerId,
+      roundId: 'concurrent-refund-round',
+      gameId: 'integration-game',
+      kind: WagerTransactionKind.Bet,
+      money: Money.from({ amount: '10.00', currency: 'BRL' }),
+    };
+
+    const betResult = await process(bet);
+    expect(betResult.transaction.status).toBe('PROCESSED');
+
+    const refunds = Array.from({ length: 2 }, (_, index) => ({
+      ...bet,
+      externalTransactionId: `refund-attempt-${index}`,
+      idempotencyKey: `refund-attempt-key-${index}`,
+      kind: WagerTransactionKind.Refund,
+      referenceExternalTransactionId: bet.externalTransactionId,
+    }));
+
+    const results = await Promise.allSettled(
+      refunds.map((refund) => process(refund)),
+    );
+
+    const fulfilled = results.filter(
+      (result) => result.status === 'fulfilled',
+    );
+
+    const processedRefunds = fulfilled.filter(
+      (result) =>
+        result.status === 'fulfilled' &&
+        result.value.transaction.status === 'PROCESSED',
+    );
+
+    expect(processedRefunds).toHaveLength(1);
+
+    const walletRows = await orm.em.getConnection().execute<
+      Array<{ balance: string }>
+    >(
+      'select "balance" from "wallets" where "id" = ?',
+      [wallet.id],
+    );
+
+    expect(walletRows).toEqual([{ balance: '100.00' }]);
+
+    const refundRows = await orm.em.getConnection().execute<
+      Array<{ count: number; total: string }>
+    >(
+      `select
+        count(*)::int as "count",
+        coalesce(sum("amount"), 0)::text as "total"
+      from "wallet_ledger_entries"
+      where "wallet_id" = ?
+        and "transaction_id" in (
+          select "id"
+          from "wager_transactions"
+          where "provider_id" = ?
+            and "kind" = 'REFUND'
+            and "reference_external_transaction_id" = ?
+            and "status" = 'PROCESSED'
+        )`,
+      [wallet.id, providerId, bet.externalTransactionId],
+    );
+
+    expect(refundRows).toEqual([{ count: 1, total: '10.00' }]);
+  });
+  
   it('does not apply a wager twice when ACK fails after the database commit', async () => {
     if (!eventQueueName) {
       throw new Error('The event queue is unavailable');
