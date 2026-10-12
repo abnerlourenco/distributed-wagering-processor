@@ -3,6 +3,7 @@ import {
   CreateQueueCommand,
   DeleteQueueCommand,
   GetQueueAttributesCommand,
+  ChangeMessageVisibilityCommand,
   SQSClient,
 } from '@aws-sdk/client-sqs';
 import { MikroORM } from '@mikro-orm/postgresql';
@@ -993,4 +994,153 @@ describe('Wager commands through PostgreSQL and LocalStack', () => {
       },
     ]);
   });
+  
+  it('does not apply a wager twice when ACK fails after the database commit', async () => {
+    if (!eventQueueName) {
+      throw new Error('The event queue is unavailable');
+    }
+
+    const testQueueName = `ack-failure-${randomUUID()}.fifo`;
+    let testQueueUrl: string | undefined;
+
+    let deleteSpy: ReturnType<typeof vi.spyOn> | undefined;
+    let visibilitySpy: ReturnType<typeof vi.spyOn> | undefined;
+
+    try {
+      const createdQueue = await client.send(
+        new CreateQueueCommand({
+          QueueName: testQueueName,
+          Attributes: {
+            FifoQueue: 'true',
+            VisibilityTimeout: '0',
+          },
+        }),
+      );
+
+      testQueueUrl = createdQueue.QueueUrl;
+
+      if (!testQueueUrl) {
+        throw new Error('Could not create the ACK failure test queue');
+      }
+
+      const testPublisher = new OutboxPublisher(
+        new MikroOrmOutboxPublisherRepository(orm.em),
+        adapter,
+        eventQueueName,
+        testQueueName,
+      );
+
+      const testConsumer = new WagerCommandConsumer(
+        new ProcessWagerTransactionUseCase(
+          new MikroOrmProcessWagerTransactionsRepository(orm.em),
+        ),
+        new MikroOrmInboxConsumerRepository(orm.em),
+        adapter,
+        testQueueName,
+        1,
+      );
+
+      const playerId = randomUUID();
+
+      const { wallet } = await new OpenWalletUseCase(
+        new MikroOrmWalletsRepository(orm.em),
+      ).execute({
+        playerId,
+        initialBalance: Money.from({
+          amount: '100.00',
+          currency: 'BRL',
+        }),
+      });
+
+      walletId = wallet.id;
+
+      const queued = await new QueueWagerTransactionUseCase(
+        new MikroOrmQueueWagerTransactionsRepository(orm.em),
+      ).execute({
+        providerId: 'integration-provider',
+        externalTransactionId: randomUUID(),
+        idempotencyKey: randomUUID(),
+        walletId: wallet.id,
+        playerId,
+        roundId: 'ack-failure-round',
+        gameId: 'integration-game',
+        kind: WagerTransactionKind.Bet,
+        money: Money.from({
+          amount: '10.00',
+          currency: 'BRL',
+        }),
+      });
+
+      transactionIds.push(queued.transaction.id);
+
+      const publishResult = await testPublisher.publishAvailable();
+      expect(publishResult.published).toBeGreaterThan(0);
+
+      // Simula falha no ACK depois do processamento financeiro.
+      deleteSpy = vi
+        .spyOn(adapter, 'deleteMessage')
+        .mockRejectedValueOnce(new Error('simulated ACK failure'));
+
+      // Torna a mensagem imediatamente disponível para redelivery.
+      visibilitySpy = vi
+        .spyOn(adapter, 'changeMessageVisibility')
+        .mockImplementation(async (queueUrl, receiptHandle) => {
+          await client.send(
+            new ChangeMessageVisibilityCommand({
+              QueueUrl: queueUrl,
+              ReceiptHandle: receiptHandle,
+              VisibilityTimeout: 0,
+            }),
+          );
+        });
+
+      // Primeira entrega: processa a aposta, mas falha ao confirmar o ACK.
+      expect(await testConsumer.consumeOne()).toBe(true);
+
+      // Segunda entrega: deve reconhecer a operação já processada.
+      expect(await testConsumer.consumeOne()).toBe(true);
+
+      const balanceRows = await orm.em.getConnection().execute<
+        Array<{ balance: string }>
+      >(
+        'select "balance" from "wallets" where "id" = ?',
+        [wallet.id],
+      );
+
+      expect(balanceRows).toEqual([{ balance: '90.00' }]);
+
+      const ledgerRows = await orm.em.getConnection().execute<
+        Array<{ count: number }>
+      >(
+        `select count(*)::int as "count"
+        from "wallet_ledger_entries"
+        where "wallet_id" = ?
+          and "transaction_id" = ?`,
+        [wallet.id, queued.transaction.id],
+      );
+
+      expect(ledgerRows).toEqual([{ count: 1 }]);
+
+      const transactionRows = await orm.em.getConnection().execute<
+        Array<{ status: string }>
+      >(
+        'select "status" from "wager_transactions" where "id" = ?',
+        [queued.transaction.id],
+      );
+
+      expect(transactionRows).toEqual([{ status: 'PROCESSED' }]);
+    } finally {
+      deleteSpy?.mockRestore();
+      visibilitySpy?.mockRestore();
+
+      if (testQueueUrl) {
+        await client.send(
+          new DeleteQueueCommand({
+            QueueUrl: testQueueUrl,
+          }),
+        );
+      }
+    }
+  });
+
 });
