@@ -6,6 +6,7 @@ import { mikroOrmConfig } from './database/mikro-orm.config.js';
 import { WalletsModule } from './http/wallets/wallets.module.js';
 import { WageringModule } from './http/wagering/wagering.module.js';
 import { HealthModule } from './http/health/health.module.js';
+import { MessagingModule } from './messaging/messaging.module.js';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { HealthModule } from './http/health/health.module.js';
     WalletsModule,
     WageringModule,
     HealthModule,
+    MessagingModule,
   ],
   controllers: [AppController],
   providers: [AppService],

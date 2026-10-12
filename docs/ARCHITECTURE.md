@@ -87,13 +87,13 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 - `outbox_messages` registra eventos de saída junto aos dados de negócio na mesma transação PostgreSQL. `deduplication_key`, quando informado, evita inserir novamente o mesmo evento lógico.
 - Ambas as tabelas guardam payload JSONB, estado, tentativas, data de disponibilidade e código de erro técnico; não devem armazenar stack traces, tokens ou segredos em `last_error_code`.
 - Índices parciais facilitam localizar mensagens disponíveis para processamento. Estados e timestamps de conclusão são protegidos por constraints.
-- Inbox/Outbox ainda é somente modelo persistente. O adaptador SQS envia, recebe e remove mensagens, mas publisher, consumidores e política/backoff de retries serão implementados nas etapas seguintes. Inserção de outbox só garante publicação futura quando realizada na mesma transação dos dados de negócio; entrega permanece potencialmente duplicada e consumidores devem ser idempotentes.
+- O publisher reserva mensagens disponíveis com `FOR UPDATE SKIP LOCKED`, publica envelopes contendo o ID estável da mensagem e marca como `PUBLISHED` somente após confirmação do SQS. Falhas são persistidas como `FAILED` com retry exponencial (até cinco minutos entre tentativas); claims `PROCESSING` abandonados podem ser retomados após cinco minutos. Uma falha após o SQS aceitar a mensagem, mas antes de persistir `PUBLISHED`, pode causar duplicação; consumidores devem deduplicar pelo ID do evento.
+- O worker consulta o Outbox a cada segundo, usa a fila `LOCALSTACK_QUEUE_NAME` e registra falhas técnicas sem incluir mensagens de erro potencialmente sensíveis. A publicação continua sendo pelo menos uma vez; dead-letter e política de limite de tentativas serão etapas posteriores. Inserção de outbox só garante publicação futura quando realizada na mesma transação dos dados de negócio.
 
 ## Decisões tomadas
 
 1- Foi realizada a decisão de utilizar o MikroORM para mapeamento do banco de dados postgres.
 2- Foi tomada a decisão de utilizar a biblioteca zod para validações de variaveis na aplicação.
-
 
 ### Runtime e aplicação
 
@@ -122,6 +122,7 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 - Para subir apenas o SQS: configurar `LOCALSTACK_AUTH_TOKEN` no `.env` local e executar `docker compose up -d localstack`. Conferir readiness com `docker compose ps localstack`, criar a fila com `docker compose exec localstack awslocal sqs create-queue --queue-name wagering-events` e verificar com `docker compose exec localstack awslocal sqs get-queue-url --queue-name wagering-events`. A criação deve ser repetida se a fila deixar de existir. Para parar: `docker compose stop localstack`.
 - `.env.example` documenta `PORT`, as variáveis `POSTGRES_*`, `LOCALSTACK_AUTH_TOKEN`, `LOCALSTACK_PORT`, `LOCALSTACK_ENDPOINT` e a URL opcional do banco dedicado de testes de integração. Credenciais de exemplo destinam-se exclusivamente ao ambiente local.
 - `bun run test:sqs:integration` executa um teste contra LocalStack real; ele cria e remove uma fila temporária isolada para testar envio, recebimento e exclusão de mensagem, sem alterar a fila manual `wagering-events`.
+- `bun run test:outbox:integration` requer PostgreSQL real e LocalStack ativos e um `POSTGRES_TEST_DATABASE_URL` dedicado terminado em `_test` ou `-test`. O teste grava no Outbox desse banco de teste, verifica a publicação no SQS e remove a mensagem/fila temporária; não use uma URL de banco de desenvolvimento. Ele usa uma configuração Vitest isolada; execute-o separadamente, não em paralelo com `bun run test:e2e`, pois ambas as suítes podem usar o mesmo banco de teste.
 - Os testes de integração PostgreSQL usam `POSTGRES_TEST_DATABASE_URL`, exigem um nome de banco terminado em `_test` ou `-test`, aplicam as migrations e limpam as tabelas desse banco. Nunca apontar essa variável para o banco de desenvolvimento.
 - Para executar localmente, criar o banco `wagering_finances_test` para o usuário configurado no PostgreSQL, definir `POSTGRES_TEST_DATABASE_URL` apontando para ele e executar `bun run test:integration`. O comando compila a aplicação, aplica migrations, testa constraints e rollback transacional, e valida down/up de todas as migrations atuais.
 
@@ -148,4 +149,4 @@ A aplicação deve falhar no boot quando as configurações obrigatórias forem 
 
 ## Fora de escopo por enquanto
 
-As tabelas e entidades de Inbox/Outbox já estão definidas, mas ainda não participam do fluxo financeiro. LocalStack, a fila SQS padrão `wagering-events` e o adaptador de mensagens estão disponíveis; integração do fluxo financeiro com Outbox/Inbox, publisher/consumer e recuperação continuam pendentes. Keycloak e OpenTelemetry também permanecem adiados.
+LocalStack, a fila SQS padrão `wagering-events`, o adaptador e o worker publisher estão disponíveis. O processamento financeiro ainda não grava eventos no Outbox, e Inbox, consumidores, recuperação de mensagens pendentes e dead-letter continuam pendentes. Keycloak e OpenTelemetry também permanecem adiados.

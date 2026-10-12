@@ -1,5 +1,6 @@
 import {
   DeleteMessageCommand,
+  GetQueueUrlCommand,
   ReceiveMessageCommand,
   SendMessageCommand,
   SQSClient,
@@ -13,6 +14,18 @@ export interface ReceivedSqsMessage {
 
 export class SqsMessageAdapter {
   constructor(private readonly client: SQSClient) {}
+
+  async getQueueUrl(queueName: string): Promise<string> {
+    const result = await this.client.send(
+      new GetQueueUrlCommand({ QueueName: queueName }),
+    );
+
+    if (!result.QueueUrl) {
+      throw new Error(`SQS did not return a URL for queue "${queueName}"`);
+    }
+
+    return result.QueueUrl;
+  }
 
   async sendMessage(queueUrl: string, body: string): Promise<string> {
     const result = await this.client.send(
