@@ -1,7 +1,5 @@
-import {
-  LockMode,
-  UniqueConstraintViolationException,
-} from '@mikro-orm/core';
+import { randomUUID } from 'node:crypto';
+import { LockMode, UniqueConstraintViolationException } from '@mikro-orm/core';
 import { EntityManager } from '@mikro-orm/postgresql';
 import { DomainError } from '../../../../core/domain/domain-error.js';
 import { Money } from '../../../../core/domain/money.js';
@@ -23,14 +21,13 @@ import {
 } from '../../../../domain/wallets/enterprise/entities/wallet-ledger-entry.js';
 import { Wallet } from '../../../../domain/wallets/enterprise/entities/wallet.js';
 import { WalletNotFoundError } from '../../../../domain/wallets/application/errors/wallet-not-found-error.js';
+import { OutboxMessageEntity } from '../entities/outbox-message.entity.js';
 import { WagerTransactionEntity } from '../entities/wager-transaction.entity.js';
 import { WalletEntity } from '../entities/wallet.entity.js';
 import { WalletLedgerEntryEntity } from '../entities/wallet-ledger-entry.entity.js';
 import { MikroOrmWagerTransactionsRepository } from './mikro-orm-wager-transactions.repository.js';
 
-export class MikroOrmProcessWagerTransactionsRepository
-  implements ProcessWagerTransactionsRepository
-{
+export class MikroOrmProcessWagerTransactionsRepository implements ProcessWagerTransactionsRepository {
   constructor(private readonly entityManager: EntityManager) {}
 
   async process(
@@ -117,7 +114,8 @@ export class MikroOrmProcessWagerTransactionsRepository
           if (
             !processedReference ||
             processedReference.status === WagerTransactionStatus.Pending ||
-            processedReference.status === WagerTransactionStatus.PendingReference
+            processedReference.status ===
+              WagerTransactionStatus.PendingReference
           ) {
             transaction.markPendingReference();
           } else if (
@@ -144,7 +142,8 @@ export class MikroOrmProcessWagerTransactionsRepository
           if (
             !processedReference ||
             processedReference.status === WagerTransactionStatus.Pending ||
-            processedReference.status === WagerTransactionStatus.PendingReference
+            processedReference.status ===
+              WagerTransactionStatus.PendingReference
           ) {
             transaction.markPendingReference();
           } else if (
@@ -190,7 +189,8 @@ export class MikroOrmProcessWagerTransactionsRepository
           if (
             !processedReference ||
             processedReference.status === WagerTransactionStatus.Pending ||
-            processedReference.status === WagerTransactionStatus.PendingReference
+            processedReference.status ===
+              WagerTransactionStatus.PendingReference
           ) {
             transaction.markPendingReference();
           } else if (
@@ -365,10 +365,48 @@ export class MikroOrmProcessWagerTransactionsRepository
           await entityManager.flush();
         }
 
+        if (transaction.status === WagerTransactionStatus.Processed) {
+          if (!transaction.processedAt) {
+            throw new Error(
+              'Processed wager transaction is missing its processing timestamp',
+            );
+          }
+
+          entityManager.persist(
+            entityManager.create(OutboxMessageEntity, {
+              id: randomUUID(),
+              deduplicationKey: `wager-transaction:${transaction.id}:processed`,
+              aggregateType: 'wager-transaction',
+              aggregateId: transaction.id,
+              eventType: 'WagerTransactionProcessed',
+              payload: {
+                transactionId: transaction.id,
+                providerId: transaction.providerId,
+                externalTransactionId: transaction.externalTransactionId,
+                walletId: transaction.walletId,
+                playerId: transaction.playerId,
+                roundId: transaction.roundId,
+                gameId: transaction.gameId,
+                kind: transaction.kind,
+                amount: transaction.money.toString(),
+                currency: transaction.money.currency,
+                referenceTransactionId: referenceTransactionId ?? null,
+                resultingBalance: resultBalance.toString(),
+                processedAt: transaction.processedAt.toISOString(),
+              },
+              status: 'PENDING',
+              attempts: 0,
+              availableAt: transaction.processedAt,
+              occurredAt: transaction.processedAt,
+            }),
+          );
+          await entityManager.flush();
+        }
+
         return {
-        transaction,
-        balance: resultBalance,
-        idempotentReplay: false,
+          transaction,
+          balance: resultBalance,
+          idempotentReplay: false,
         };
       });
     } catch (error) {
@@ -405,7 +443,9 @@ export class MikroOrmProcessWagerTransactionsRepository
         existing.referenceExternalTransactionId ===
           transaction.referenceExternalTransactionId
       ) {
-        throw new DomainError('The referenced transaction has already been rolled back');
+        throw new DomainError(
+          'The referenced transaction has already been rolled back',
+        );
       }
 
       return this.replay(existing, transaction);
@@ -420,8 +460,7 @@ export class MikroOrmProcessWagerTransactionsRepository
       throw new WagerTransactionAlreadyExistsError();
     }
 
-    const transaction =
-      MikroOrmWagerTransactionsRepository.toDomain(existing);
+    const transaction = MikroOrmWagerTransactionsRepository.toDomain(existing);
     if (!transaction.matchesPayload(request.payloadHash)) {
       throw new IdempotencyConflictError();
     }

@@ -162,14 +162,19 @@ describe('PostgreSQL migrations and integrity constraints', () => {
 
   it('loads a persisted wallet by ID with exact balance and version', async () => {
     const persisted = await insertWallet({ balance: '125.40' });
-    const repository = new MikroOrmWalletsRepository(orm.em.fork({ clear: true }));
+    const repository = new MikroOrmWalletsRepository(
+      orm.em.fork({ clear: true }),
+    );
 
     const wallet = await repository.findById(persisted.id);
 
     expect(wallet).not.toBeNull();
     expect(wallet?.id).toBe(persisted.id);
     expect(wallet?.playerId).toBe(persisted.playerId);
-    expect(wallet?.balance.toJSON()).toEqual({ amount: '125.40', currency: 'BRL' });
+    expect(wallet?.balance.toJSON()).toEqual({
+      amount: '125.40',
+      currency: 'BRL',
+    });
     expect(wallet?.version).toBe(1);
     await expect(repository.findById(randomUUID())).resolves.toBeNull();
   });
@@ -214,9 +219,7 @@ describe('PostgreSQL migrations and integrity constraints', () => {
       ledgerIds[1],
       ledgerIds[0],
     ]);
-    expect(firstPage[0].cursorCreatedAt).toBe(
-      '2026-01-01T00:00:00.000003Z',
-    );
+    expect(firstPage[0].cursorCreatedAt).toBe('2026-01-01T00:00:00.000003Z');
 
     const secondPage = await repository.findPage(wallet.id, 2, {
       createdAt: firstPage[1].cursorCreatedAt,
@@ -228,11 +231,12 @@ describe('PostgreSQL migrations and integrity constraints', () => {
 
   it('processes a BET with the wallet, transaction, and ledger updated atomically', async () => {
     const wallet = await insertWallet({ balance: '100.00' });
-    const result = await new ProcessBetUseCase(
+    const processBet = new ProcessBetUseCase(
       new MikroOrmProcessWagerTransactionsRepository(
         orm.em.fork({ clear: true }),
       ),
-    ).execute({
+    );
+    const request = {
       providerId: 'provider-a',
       externalTransactionId: 'bet-transaction-1',
       idempotencyKey: 'provider-a:bet-transaction-1',
@@ -241,7 +245,8 @@ describe('PostgreSQL migrations and integrity constraints', () => {
       roundId: 'round-1',
       gameId: 'game-1',
       money: Money.from({ amount: '25.00', currency: 'BRL' }),
-    });
+    };
+    const result = await processBet.execute(request);
 
     expect(result.transaction.status).toBe('PROCESSED');
     expect(result.balance.toString()).toBe('75.00');
@@ -279,6 +284,100 @@ describe('PostgreSQL migrations and integrity constraints', () => {
         balance_after: '75.00',
       },
     ]);
+
+    const outbox = await execute(
+      `select "event_type", "status", "deduplication_key", "payload"
+       from "outbox_messages" where "aggregate_id" = ?`,
+      [result.transaction.id],
+    );
+    expect(outbox).toEqual([
+      {
+        event_type: 'WagerTransactionProcessed',
+        status: 'PENDING',
+        deduplication_key: `wager-transaction:${result.transaction.id}:processed`,
+        payload: {
+          transactionId: result.transaction.id,
+          providerId: 'provider-a',
+          externalTransactionId: 'bet-transaction-1',
+          walletId: wallet.id,
+          playerId: wallet.playerId,
+          roundId: 'round-1',
+          gameId: 'game-1',
+          kind: 'BET',
+          amount: '25.00',
+          currency: 'BRL',
+          referenceTransactionId: null,
+          resultingBalance: '75.00',
+          processedAt: expect.any(String),
+        },
+      },
+    ]);
+
+    const replay = await processBet.execute(request);
+    expect(replay.idempotentReplay).toBe(true);
+    expect(replay.transaction.id).toBe(result.transaction.id);
+    expect(
+      await execute(
+        'select count(*)::int as count from "outbox_messages" where "aggregate_id" = ?',
+        [result.transaction.id],
+      ),
+    ).toEqual([{ count: 1 }]);
+  });
+
+  it('rolls back a BET if its Outbox event cannot be persisted', async () => {
+    const wallet = await insertWallet({ balance: '100.00' });
+    const request = {
+      providerId: 'provider-a',
+      externalTransactionId: 'bet-outbox-conflict',
+      idempotencyKey: 'provider-a:bet-outbox-conflict',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    };
+    const transactionId = randomUUID();
+    await execute(
+      `insert into "outbox_messages" (
+        "id", "deduplication_key", "aggregate_type", "aggregate_id", "event_type", "payload"
+      ) values (?, ?, 'wager-transaction', ?, 'WagerTransactionProcessed', '{}'::jsonb)`,
+      [
+        randomUUID(),
+        `wager-transaction:${transactionId}:processed`,
+        transactionId,
+      ],
+    );
+
+    const transaction = WagerTransaction.create({
+      ...request,
+      id: transactionId,
+      payloadHash: 'outbox-conflict-payload',
+      kind: WagerTransactionKind.Bet,
+    });
+    await expect(
+      new MikroOrmProcessWagerTransactionsRepository(
+        orm.em.fork({ clear: true }),
+      ).process(transaction),
+    ).rejects.toThrow();
+
+    expect(
+      await execute(
+        'select "balance", "version" from "wallets" where "id" = ?',
+        [wallet.id],
+      ),
+    ).toEqual([{ balance: '100.00', version: 1 }]);
+    expect(
+      await execute(
+        'select count(*)::int as count from "wager_transactions" where "external_transaction_id" = ?',
+        [request.externalTransactionId],
+      ),
+    ).toEqual([{ count: 0 }]);
+    expect(
+      await execute(
+        'select count(*)::int as count from "wallet_ledger_entries" where "wallet_id" = ?',
+        [wallet.id],
+      ),
+    ).toEqual([{ count: 0 }]);
   });
 
   it('credits WIN atomically when its referenced BET has already been processed', async () => {
@@ -418,18 +517,20 @@ describe('PostgreSQL migrations and integrity constraints', () => {
       gameId: 'game-1',
       money: Money.from({ amount: '25.00', currency: 'BRL' }),
     });
-    const result = await new ProcessWagerTransactionUseCase(repository).execute({
-      providerId: 'provider-a',
-      externalTransactionId: 'invalid-win-reference',
-      idempotencyKey: 'provider-a:invalid-win-reference',
-      walletId: wallet.id,
-      playerId: wallet.playerId,
-      roundId: 'round-2',
-      gameId: 'game-1',
-      kind: WagerTransactionKind.Win,
-      referenceExternalTransactionId: 'invalid-win-reference-bet',
-      money: Money.from({ amount: '25.00', currency: 'BRL' }),
-    });
+    const result = await new ProcessWagerTransactionUseCase(repository).execute(
+      {
+        providerId: 'provider-a',
+        externalTransactionId: 'invalid-win-reference',
+        idempotencyKey: 'provider-a:invalid-win-reference',
+        walletId: wallet.id,
+        playerId: wallet.playerId,
+        roundId: 'round-2',
+        gameId: 'game-1',
+        kind: WagerTransactionKind.Win,
+        referenceExternalTransactionId: 'invalid-win-reference-bet',
+        money: Money.from({ amount: '25.00', currency: 'BRL' }),
+      },
+    );
 
     expect(result.transaction.status).toBe('REJECTED');
     expect(result.transaction.failureCode).toBe('INVALID_REFERENCE');
@@ -547,18 +648,20 @@ describe('PostgreSQL migrations and integrity constraints', () => {
       gameId: 'game-1',
       money: Money.from({ amount: '25.00', currency: 'BRL' }),
     });
-    const refund = await new ProcessWagerTransactionUseCase(repository).execute({
-      providerId: 'provider-a',
-      externalTransactionId: 'refund-amount-mismatch',
-      idempotencyKey: 'provider-a:refund-amount-mismatch',
-      walletId: wallet.id,
-      playerId: wallet.playerId,
-      roundId: 'round-1',
-      gameId: 'game-1',
-      kind: WagerTransactionKind.Refund,
-      referenceExternalTransactionId: 'refund-amount-bet',
-      money: Money.from({ amount: '24.99', currency: 'BRL' }),
-    });
+    const refund = await new ProcessWagerTransactionUseCase(repository).execute(
+      {
+        providerId: 'provider-a',
+        externalTransactionId: 'refund-amount-mismatch',
+        idempotencyKey: 'provider-a:refund-amount-mismatch',
+        walletId: wallet.id,
+        playerId: wallet.playerId,
+        roundId: 'round-1',
+        gameId: 'game-1',
+        kind: WagerTransactionKind.Refund,
+        referenceExternalTransactionId: 'refund-amount-bet',
+        money: Money.from({ amount: '24.99', currency: 'BRL' }),
+      },
+    );
 
     expect(refund.transaction.status).toBe('REJECTED');
     expect(refund.transaction.failureCode).toBe('REFUND_AMOUNT_MISMATCH');
@@ -754,7 +857,9 @@ describe('PostgreSQL migrations and integrity constraints', () => {
     });
 
     expect(rollbackWin.transaction.status).toBe('PROCESSED');
-    expect(rollbackWin.transaction.referenceTransactionId).toBe(win.transaction.id);
+    expect(rollbackWin.transaction.referenceTransactionId).toBe(
+      win.transaction.id,
+    );
     expect(rollbackRefund.transaction.status).toBe('PROCESSED');
     expect(rollbackRefund.transaction.referenceTransactionId).toBe(
       refund.transaction.id,
@@ -1011,10 +1116,9 @@ describe('PostgreSQL migrations and integrity constraints', () => {
       }),
     ).rejects.toBeInstanceOf(IdempotencyConflictError);
     expect(
-      await execute(
-        'select "balance" from "wallets" where "id" = ?',
-        [wallet.id],
-      ),
+      await execute('select "balance" from "wallets" where "id" = ?', [
+        wallet.id,
+      ]),
     ).toEqual([{ balance: '65.00' }]);
   });
 
@@ -1069,12 +1173,13 @@ describe('PostgreSQL migrations and integrity constraints', () => {
       money: Money.from({ amount: '80.00', currency: 'BRL' }),
     }));
 
-    const results = await Promise.all(requests.map((request) => useCase.execute(request)));
+    const results = await Promise.all(
+      requests.map((request) => useCase.execute(request)),
+    );
 
-    expect(results.map(({ transaction }) => transaction.status).sort()).toEqual([
-      'PROCESSED',
-      'REJECTED',
-    ]);
+    expect(results.map(({ transaction }) => transaction.status).sort()).toEqual(
+      ['PROCESSED', 'REJECTED'],
+    );
     expect(
       await execute(
         'select "balance", "version" from "wallets" where "id" = ?',
@@ -1113,8 +1218,12 @@ describe('PostgreSQL migrations and integrity constraints', () => {
     ]);
 
     expect(results[0].transaction.id).toBe(results[1].transaction.id);
-    expect(results.filter(({ idempotentReplay }) => !idempotentReplay)).toHaveLength(1);
-    expect(results.filter(({ idempotentReplay }) => idempotentReplay)).toHaveLength(1);
+    expect(
+      results.filter(({ idempotentReplay }) => !idempotentReplay),
+    ).toHaveLength(1);
+    expect(
+      results.filter(({ idempotentReplay }) => idempotentReplay),
+    ).toHaveLength(1);
     expect(
       await execute(
         'select "balance", "version" from "wallets" where "id" = ?',
