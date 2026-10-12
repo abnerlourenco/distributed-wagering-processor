@@ -919,7 +919,7 @@
           "autoincrement": false,
           "primary": false,
           "nullable": true,
-          "unique": false,
+          "unique": true,
           "length": null,
           "precision": null,
           "scale": null,
@@ -928,6 +928,23 @@
           "collation": null,
           "enumItems": [],
           "mappedType": "uuid"
+        },
+        "resulting_balance": {
+          "name": "resulting_balance",
+          "type": "numeric(20,2)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": null,
+          "precision": 20,
+          "scale": 2,
+          "default": null,
+          "comment": null,
+          "collation": null,
+          "enumItems": [],
+          "mappedType": "decimal"
         },
         "round_id": {
           "name": "round_id",
@@ -1045,6 +1062,28 @@
         },
         {
           "columnNames": [
+            "reference_transaction_id"
+          ],
+          "composite": false,
+          "constraint": false,
+          "keyName": "wager_transactions_refund_reference_unique",
+          "primary": false,
+          "unique": true,
+          "where": "((kind)::text = 'REFUND'::text) AND (reference_transaction_id IS NOT NULL)"
+        },
+        {
+          "columnNames": [
+            "reference_transaction_id"
+          ],
+          "composite": false,
+          "constraint": false,
+          "keyName": "wager_transactions_rollback_reference_unique",
+          "primary": false,
+          "unique": true,
+          "where": "((kind)::text = 'ROLLBACK'::text) AND ((status)::text = 'PROCESSED'::text) AND (reference_transaction_id IS NOT NULL)"
+        },
+        {
+          "columnNames": [
             "status",
             "created_at"
           ],
@@ -1127,6 +1166,12 @@
           "expression": "(kind <> ALL (ARRAY['REFUND'::character varying, 'ROLLBACK'::character varying])) OR (reference_external_transaction_id IS NOT NULL)",
           "definition": "CHECK ((((kind)::text <> ALL ((ARRAY['REFUND'::character varying, 'ROLLBACK'::character varying])::text[])) OR (reference_external_transaction_id IS NOT NULL)))",
           "columnName": "kind"
+        },
+        {
+          "name": "wager_transactions_resulting_balance_non_negative",
+          "expression": "(resulting_balance IS NULL) OR (resulting_balance >= 0)",
+          "definition": "CHECK (((resulting_balance IS NULL) OR (resulting_balance >= (0)::numeric)))",
+          "columnName": "resulting_balance"
         },
         {
           "name": "wager_transactions_round_id_not_empty",

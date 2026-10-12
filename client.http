@@ -1,12 +1,14 @@
 @baseUrl = http://localhost:3000
+@providerId = provider-a
 
 ### Create a wallet with an initial balance
+# Use a new playerId if you want to create another wallet for the same currency.
 # @name createWallet
 POST {{baseUrl}}/wallets
 Content-Type: application/json
 
 {
-  "playerId": "d0c4be2c-e53d-44df-9724-e0d5d5172d0b",
+  "playerId": "45439f13-87f9-4908-a33e-fdb5fc4cd651",
   "initialBalance": {
     "amount": "1000.00",
     "currency": "BRL"
@@ -28,13 +30,13 @@ Accept: application/json
 ### Submit a BET
 # @name submitBet
 POST {{baseUrl}}/wagering/transactions
-Idempotency-Key: provider-a:transaction-123
+Idempotency-Key: {{providerId}}:transaction-123
 Content-Type: application/json
 
 {
-  "providerId": "provider-a",
+  "providerId": "{{providerId}}",
   "externalTransactionId": "transaction-123",
-  "playerId": "d0c4be2c-e53d-44df-9724-e0d5d5172d0b",
+  "playerId": "{{createWallet.response.body.$.playerId}}",
   "walletId": "{{createWallet.response.body.$.id}}",
   "roundId": "round-987",
   "gameId": "fortune-chimp",
@@ -47,13 +49,13 @@ Content-Type: application/json
 
 ### Submit a WIN for the processed BET above
 POST {{baseUrl}}/wagering/transactions
-Idempotency-Key: provider-a:win-123
+Idempotency-Key: {{providerId}}:win-123
 Content-Type: application/json
 
 {
-  "providerId": "provider-a",
+  "providerId": "{{providerId}}",
   "externalTransactionId": "win-123",
-  "playerId": "d0c4be2c-e53d-44df-9724-e0d5d5172d0b",
+  "playerId": "{{createWallet.response.body.$.playerId}}",
   "walletId": "{{createWallet.response.body.$.id}}",
   "roundId": "round-987",
   "gameId": "fortune-chimp",
@@ -67,13 +69,13 @@ Content-Type: application/json
 
 ### Submit a LOSS
 POST {{baseUrl}}/wagering/transactions
-Idempotency-Key: provider-a:loss-123
+Idempotency-Key: {{providerId}}:loss-123
 Content-Type: application/json
 
 {
-  "providerId": "provider-a",
+  "providerId": "{{providerId}}",
   "externalTransactionId": "loss-123",
-  "playerId": "d0c4be2c-e53d-44df-9724-e0d5d5172d0b",
+  "playerId": "{{createWallet.response.body.$.playerId}}",
   "walletId": "{{createWallet.response.body.$.id}}",
   "roundId": "round-988",
   "gameId": "fortune-chimp",
@@ -86,13 +88,13 @@ Content-Type: application/json
 
 ### Refund the BET (send independently; only once per processed BET)
 POST {{baseUrl}}/wagering/transactions
-Idempotency-Key: provider-a:refund-transaction-123
+Idempotency-Key: {{providerId}}:refund-transaction-123
 Content-Type: application/json
 
 {
-  "providerId": "provider-a",
+  "providerId": "{{providerId}}",
   "externalTransactionId": "refund-transaction-123",
-  "playerId": "d0c4be2c-e53d-44df-9724-e0d5d5172d0b",
+  "playerId": "{{createWallet.response.body.$.playerId}}",
   "walletId": "{{createWallet.response.body.$.id}}",
   "roundId": "round-987",
   "gameId": "fortune-chimp",
@@ -106,13 +108,13 @@ Content-Type: application/json
 
 ### Roll back a processed transaction (send independently; one processed rollback per reference)
 POST {{baseUrl}}/wagering/transactions
-Idempotency-Key: provider-a:rollback-transaction-123
+Idempotency-Key: {{providerId}}:rollback-transaction-123
 Content-Type: application/json
 
 {
-  "providerId": "provider-a",
+  "providerId": "{{providerId}}",
   "externalTransactionId": "rollback-transaction-123",
-  "playerId": "d0c4be2c-e53d-44df-9724-e0d5d5172d0b",
+  "playerId": "{{createWallet.response.body.$.playerId}}",
   "walletId": "{{createWallet.response.body.$.id}}",
   "roundId": "round-987",
   "gameId": "fortune-chimp",
@@ -129,5 +131,5 @@ GET {{baseUrl}}/wagering/transactions/{{submitBet.response.body.$.transactionId}
 Accept: application/json
 
 ### Get transaction by provider and external ID
-GET {{baseUrl}}/providers/provider-a/wagering/transactions/transaction-123
+GET {{baseUrl}}/providers/{{providerId}}/wagering/transactions/transaction-123
 Accept: application/json
