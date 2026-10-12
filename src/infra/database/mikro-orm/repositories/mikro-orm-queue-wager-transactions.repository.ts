@@ -39,6 +39,11 @@ export class MikroOrmQueueWagerTransactionsRepository implements QueueWagerTrans
           },
         );
         if (externalTransaction) {
+          if (
+            externalTransaction.idempotencyKey === transaction.idempotencyKey
+          ) {
+            return this.replay(externalTransaction, transaction);
+          }
           throw new WagerTransactionAlreadyExistsError();
         }
 

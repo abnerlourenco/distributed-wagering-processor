@@ -185,4 +185,45 @@ describe('Outbox publisher with PostgreSQL and LocalStack integration', () => {
     expect(row.lastErrorCode).toBeTruthy();
     expect(new Date(row.availableAt).getTime()).toBeGreaterThan(Date.now());
   });
+
+  it('moves an Outbox message to DEAD after the maximum publication attempts', async () => {
+    if (!queueName || !outboxMessageId) {
+      throw new Error('The publisher integration test was not initialized');
+    }
+
+    await orm.em.getConnection().execute(
+      `update "outbox_messages"
+       set "payload" = ?::jsonb, "attempts" = 4
+       where "id" = ?`,
+      [JSON.stringify({ oversized: 'x'.repeat(2048) }), outboxMessageId],
+    );
+
+    const publisher = new OutboxPublisher(repository, adapter, queueName);
+    expect(await publisher.publishAvailable()).toEqual({
+      published: 0,
+      failed: 1,
+    });
+
+    const rows = await orm.em.getConnection().execute<
+      Array<{
+        status: string;
+        attempts: number;
+        lastErrorCode: string | null;
+      }>
+    >(
+      `select "status", "attempts", "last_error_code" as "lastErrorCode"
+       from "outbox_messages"
+       where "id" = ?`,
+      [outboxMessageId],
+    );
+    expect(rows).toEqual([
+      {
+        status: 'DEAD',
+        attempts: 5,
+        lastErrorCode: expect.stringMatching(
+          /^MAX_PUBLISH_ATTEMPTS_OUTCOME_UNKNOWN:/,
+        ),
+      },
+    ]);
+  });
 });

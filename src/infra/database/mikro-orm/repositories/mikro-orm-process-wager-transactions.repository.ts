@@ -21,6 +21,11 @@ import {
 } from '../../../../domain/wallets/enterprise/entities/wallet-ledger-entry.js';
 import { Wallet } from '../../../../domain/wallets/enterprise/entities/wallet.js';
 import { WalletNotFoundError } from '../../../../domain/wallets/application/errors/wallet-not-found-error.js';
+import {
+  getPendingReferenceRetryAt,
+  hasPendingReferenceRetryExpired,
+  MAX_PENDING_REFERENCE_ATTEMPTS,
+} from '../../../../domain/wagering/application/policies/pending-reference-retry-policy.js';
 import { OutboxMessageEntity } from '../entities/outbox-message.entity.js';
 import { WagerTransactionEntity } from '../entities/wager-transaction.entity.js';
 import { WalletEntity } from '../entities/wallet.entity.js';
@@ -39,7 +44,11 @@ export class MikroOrmProcessWagerTransactionsRepository implements ProcessWagerT
           providerId: transaction.providerId,
           idempotencyKey: transaction.idempotencyKey,
         });
-        if (existing && existing.status !== WagerTransactionStatus.Pending) {
+        if (
+          existing &&
+          existing.status !== WagerTransactionStatus.Pending &&
+          existing.status !== WagerTransactionStatus.PendingReference
+        ) {
           return this.replay(existing, transaction);
         }
         if (existing && existing.id !== transaction.id) {
@@ -69,7 +78,8 @@ export class MikroOrmProcessWagerTransactionsRepository implements ProcessWagerT
         );
         if (
           concurrentReplay &&
-          concurrentReplay.status !== WagerTransactionStatus.Pending
+          concurrentReplay.status !== WagerTransactionStatus.Pending &&
+          concurrentReplay.status !== WagerTransactionStatus.PendingReference
         ) {
           return this.replay(concurrentReplay, transaction);
         }
@@ -107,6 +117,7 @@ export class MikroOrmProcessWagerTransactionsRepository implements ProcessWagerT
         let ledgerEntry: WalletLedgerEntry | undefined;
         const balanceBefore = wallet.balance;
         let referenceTransactionId: string | undefined;
+        let missingReference = false;
         let rejected = false;
         const processedReference =
           (transaction.kind === WagerTransactionKind.Win ||
@@ -131,6 +142,7 @@ export class MikroOrmProcessWagerTransactionsRepository implements ProcessWagerT
               WagerTransactionStatus.PendingReference
           ) {
             transaction.markPendingReference();
+            missingReference = true;
           } else if (
             processedReference.status !== WagerTransactionStatus.Processed
           ) {
@@ -159,6 +171,7 @@ export class MikroOrmProcessWagerTransactionsRepository implements ProcessWagerT
               WagerTransactionStatus.PendingReference
           ) {
             transaction.markPendingReference();
+            missingReference = true;
           } else if (
             processedReference.status !== WagerTransactionStatus.Processed ||
             processedReference.kind !== WagerTransactionKind.Bet ||
@@ -206,6 +219,7 @@ export class MikroOrmProcessWagerTransactionsRepository implements ProcessWagerT
               WagerTransactionStatus.PendingReference
           ) {
             transaction.markPendingReference();
+            missingReference = true;
           } else if (
             processedReference.status !== WagerTransactionStatus.Processed ||
             (processedReference.kind !== WagerTransactionKind.Bet &&
@@ -242,6 +256,30 @@ export class MikroOrmProcessWagerTransactionsRepository implements ProcessWagerT
             } else {
               referenceTransactionId = processedReference.id;
             }
+          }
+        }
+
+        const now = new Date();
+        const retryAttemptBase =
+          concurrentReplay?.id === transaction.id
+            ? (concurrentReplay.referenceRetryAttempts ?? 0)
+            : (existing?.referenceRetryAttempts ?? 0);
+        const retryAttempts = missingReference
+          ? retryAttemptBase + 1
+          : retryAttemptBase;
+        let referenceNextAttemptAt: Date | null = null;
+        if (missingReference) {
+          if (
+            retryAttempts >= MAX_PENDING_REFERENCE_ATTEMPTS ||
+            hasPendingReferenceRetryExpired(transaction.createdAt, now)
+          ) {
+            transaction.reject('REFERENCE_TRANSACTION_NOT_FOUND');
+            missingReference = false;
+          } else {
+            referenceNextAttemptAt = getPendingReferenceRetryAt(
+              now,
+              retryAttempts,
+            );
           }
         }
 
@@ -348,6 +386,8 @@ export class MikroOrmProcessWagerTransactionsRepository implements ProcessWagerT
             resultingBalance: resultBalance.toString(),
             createdAt: transaction.createdAt,
             processedAt: transaction.processedAt,
+            referenceRetryAttempts: retryAttempts,
+            referenceNextAttemptAt,
           });
         Object.assign(transactionEntity, {
           providerId: transaction.providerId,
@@ -369,6 +409,8 @@ export class MikroOrmProcessWagerTransactionsRepository implements ProcessWagerT
           resultingBalance: resultBalance.toString(),
           createdAt: transaction.createdAt,
           processedAt: transaction.processedAt,
+          referenceRetryAttempts: retryAttempts,
+          referenceNextAttemptAt,
         });
         if (!existing) {
           entityManager.persist(transactionEntity);
@@ -435,6 +477,50 @@ export class MikroOrmProcessWagerTransactionsRepository implements ProcessWagerT
               attempts: 0,
               availableAt: transaction.processedAt,
               occurredAt: transaction.processedAt,
+            }),
+          );
+          await entityManager.flush();
+        }
+
+        if (
+          transaction.status === WagerTransactionStatus.Rejected &&
+          transaction.failureCode === 'REFERENCE_TRANSACTION_NOT_FOUND'
+        ) {
+          const referenceExternalTransactionId =
+            transaction.referenceExternalTransactionId;
+          if (!referenceExternalTransactionId) {
+            throw new Error(
+              'Rejected pending-reference transaction is missing its external reference',
+            );
+          }
+
+          const rejectedAt = new Date();
+          entityManager.persist(
+            entityManager.create(OutboxMessageEntity, {
+              id: randomUUID(),
+              deduplicationKey: `wager-transaction:${transaction.id}:rejected`,
+              aggregateType: 'wager-transaction',
+              aggregateId: transaction.id,
+              eventType: 'WagerTransactionRejected',
+              payload: {
+                transactionId: transaction.id,
+                providerId: transaction.providerId,
+                externalTransactionId: transaction.externalTransactionId,
+                walletId: transaction.walletId,
+                playerId: transaction.playerId,
+                roundId: transaction.roundId,
+                gameId: transaction.gameId,
+                kind: transaction.kind,
+                amount: transaction.money.toString(),
+                currency: transaction.money.currency,
+                referenceExternalTransactionId,
+                failureCode: transaction.failureCode,
+                rejectedAt: rejectedAt.toISOString(),
+              },
+              status: 'PENDING',
+              attempts: 0,
+              availableAt: rejectedAt,
+              occurredAt: rejectedAt,
             }),
           );
           await entityManager.flush();

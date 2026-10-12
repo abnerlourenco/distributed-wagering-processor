@@ -4,12 +4,13 @@ import { env } from './infra/env.js';
 import { HttpExceptionFilter } from './infra/http/filters/http-exception.filter.js';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule,{
+  const app = await NestFactory.create(AppModule, {
     // logger: false,
   });
 
   app.useGlobalFilters(new HttpExceptionFilter());
-  
+  app.enableShutdownHooks(['SIGINT', 'SIGTERM']);
+
   await app.listen(env.PORT);
 }
 await bootstrap();

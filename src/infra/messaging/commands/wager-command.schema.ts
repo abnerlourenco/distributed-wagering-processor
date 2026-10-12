@@ -3,15 +3,13 @@ import { WagerTransactionKind } from '../../../domain/wagering/enterprise/entiti
 
 export const wagerCommandSchema = z
   .object({
-    messageId: z.uuid(),
-    aggregateType: z.literal('wager-wallet'),
-    aggregateId: z.uuid(),
-    eventType: z.literal('WagerTransactionRequested'),
+    messageId: z.string().trim().min(1).max(255),
+    type: z.literal('WagerTransactionRequested'),
     occurredAt: z.iso.datetime(),
-    payload: z
+    data: z
       .object({
-        transactionId: z.uuid(),
-        createdAt: z.iso.datetime(),
+        transactionId: z.uuid().optional(),
+        createdAt: z.iso.datetime().optional(),
         providerId: z.string().trim().min(1).max(255),
         externalTransactionId: z.string().trim().min(1).max(255),
         idempotencyKey: z.string().trim().min(1).max(255),
@@ -26,16 +24,20 @@ export const wagerCommandSchema = z
           WagerTransactionKind.Refund,
           WagerTransactionKind.Rollback,
         ]),
-        amount: z.string().regex(/^\d{1,18}\.\d{2}$/),
-        currency: z.string().regex(/^[A-Z]{3}$/),
-        referenceExternalTransactionId: z.string().max(255).nullable(),
+        money: z
+          .object({
+            amount: z.string().regex(/^\d{1,18}\.\d{2}$/),
+            currency: z.string().regex(/^[A-Z]{3}$/),
+          })
+          .strict(),
+        referenceExternalTransactionId: z
+          .string()
+          .max(255)
+          .nullable()
+          .optional(),
       })
       .strict(),
   })
-  .strict()
-  .refine((message) => message.aggregateId === message.payload.walletId, {
-    path: ['aggregateId'],
-    message: 'Wager command aggregate must match its wallet ID',
-  });
+  .strict();
 
 export type WagerCommand = z.infer<typeof wagerCommandSchema>;

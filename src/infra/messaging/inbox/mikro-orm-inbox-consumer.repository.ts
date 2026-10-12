@@ -1,6 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { EntityManager } from '@mikro-orm/postgresql';
-import type { OutboxEvent } from './outbox-event.schema.js';
+
+export interface InboxMessage {
+  messageId: string;
+  messageType: string;
+  payload: unknown;
+}
 
 export class InboxPayloadConflictError extends Error {
   constructor() {
@@ -15,7 +20,7 @@ export class MikroOrmInboxConsumerRepository {
   async recordReceived(
     consumerName: string,
     source: string,
-    message: OutboxEvent,
+    message: InboxMessage,
   ): Promise<{ duplicate: boolean }> {
     const canonicalPayload = JSON.stringify(message, (_, value: unknown) =>
       value && typeof value === 'object' && !Array.isArray(value)
@@ -47,7 +52,7 @@ export class MikroOrmInboxConsumerRepository {
             consumerName,
             source,
             message.messageId,
-            message.eventType,
+            message.messageType,
             canonicalPayload,
             payloadHash,
           ],

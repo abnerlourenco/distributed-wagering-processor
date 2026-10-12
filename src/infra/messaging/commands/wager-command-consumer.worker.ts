@@ -16,6 +16,7 @@ export class WagerCommandConsumerWorker
   private readonly logger = new Logger(WagerCommandConsumerWorker.name);
   private timer: ReturnType<typeof setTimeout> | undefined;
   private stopped = false;
+  private inFlight: Promise<void> | undefined;
 
   constructor(private readonly consumer: WagerCommandConsumer) {}
 
@@ -23,12 +24,13 @@ export class WagerCommandConsumerWorker
     this.schedule(0);
   }
 
-  onApplicationShutdown(): void {
+  async onApplicationShutdown(): Promise<void> {
     this.stopped = true;
     this.consumer.stop();
     if (this.timer) {
       clearTimeout(this.timer);
     }
+    await this.inFlight;
   }
 
   private schedule(delayMs: number): void {
@@ -38,7 +40,7 @@ export class WagerCommandConsumerWorker
 
     this.timer = setTimeout(() => {
       this.timer = undefined;
-      void this.consumeCycle();
+      this.inFlight = this.consumeCycle();
     }, delayMs);
   }
 

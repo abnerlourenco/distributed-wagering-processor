@@ -8,7 +8,7 @@ POST {{baseUrl}}/wallets
 Content-Type: application/json
 
 {
-  "playerId": "45439f13-87f9-4908-a33e-fdb5fc4cd651",
+  "playerId": "15e304a7-bb8d-4cd2-a09e-98f87edf81a3",
   "initialBalance": {
     "amount": "1000.00",
     "currency": "BRL"
@@ -49,6 +49,7 @@ Content-Type: application/json
 }
 
 ### Check the BET status and resulting balance
+# A confirmed unsent command becomes FAILED; uncertain delivery stays PENDING for reconciliation.
 GET {{baseUrl}}/wagering/transactions/{{submitBet.response.body.$.transactionId}}
 Accept: application/json
 

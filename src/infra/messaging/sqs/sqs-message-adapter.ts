@@ -3,6 +3,7 @@ import {
   GetQueueUrlCommand,
   ReceiveMessageCommand,
   SendMessageCommand,
+  ChangeMessageVisibilityCommand,
   SQSClient,
 } from '@aws-sdk/client-sqs';
 
@@ -10,6 +11,7 @@ export interface ReceivedSqsMessage {
   messageId: string;
   receiptHandle: string;
   body: string;
+  receiveCount: number;
 }
 
 export interface SqsSendOptions {
@@ -63,6 +65,7 @@ export class SqsMessageAdapter {
         QueueUrl: queueUrl,
         MaxNumberOfMessages: 1,
         WaitTimeSeconds: waitTimeSeconds,
+        MessageSystemAttributeNames: ['ApproximateReceiveCount'],
       }),
       { abortSignal },
     );
@@ -84,7 +87,28 @@ export class SqsMessageAdapter {
       messageId: message.MessageId,
       receiptHandle: message.ReceiptHandle,
       body: message.Body,
+      receiveCount: Math.max(
+        1,
+        Number.parseInt(
+          message.Attributes?.ApproximateReceiveCount ?? '1',
+          10,
+        ) || 1,
+      ),
     };
+  }
+
+  async changeMessageVisibility(
+    queueUrl: string,
+    receiptHandle: string,
+    visibilityTimeout: number,
+  ): Promise<void> {
+    await this.client.send(
+      new ChangeMessageVisibilityCommand({
+        QueueUrl: queueUrl,
+        ReceiptHandle: receiptHandle,
+        VisibilityTimeout: visibilityTimeout,
+      }),
+    );
   }
 
   async deleteMessage(queueUrl: string, receiptHandle: string): Promise<void> {

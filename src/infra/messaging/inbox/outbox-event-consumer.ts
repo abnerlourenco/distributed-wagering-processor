@@ -30,7 +30,11 @@ export class OutboxEventConsumer {
     const result = await this.repository.recordReceived(
       'wagering-outbox-event-consumer',
       this.queueName,
-      event,
+      {
+        messageId: event.messageId,
+        messageType: event.eventType,
+        payload: event,
+      },
     );
 
     await this.sqs.deleteMessage(this.queueUrl, message.receiptHandle);

@@ -569,7 +569,8 @@
             "PENDING",
             "PROCESSING",
             "PUBLISHED",
-            "FAILED"
+            "FAILED",
+            "DEAD"
           ],
           "mappedType": "enum"
         }
@@ -654,8 +655,8 @@
         },
         {
           "name": "outbox_messages_status_valid",
-          "expression": "\"status\" in ('PENDING', 'PROCESSING', 'PUBLISHED', 'FAILED')",
-          "definition": "check (\"status\" in ('PENDING', 'PROCESSING', 'PUBLISHED', 'FAILED'))",
+          "expression": "\"status\" in ('PENDING', 'PROCESSING', 'PUBLISHED', 'FAILED', 'DEAD')",
+          "definition": "check (\"status\" in ('PENDING', 'PROCESSING', 'PUBLISHED', 'FAILED', 'DEAD'))",
           "columnName": "status"
         }
       ],
@@ -912,6 +913,40 @@
           "enumItems": [],
           "mappedType": "string"
         },
+        "reference_next_attempt_at": {
+          "name": "reference_next_attempt_at",
+          "type": "timestamptz(6)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": 6,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "collation": null,
+          "enumItems": [],
+          "mappedType": "datetime"
+        },
+        "reference_retry_attempts": {
+          "name": "reference_retry_attempts",
+          "type": "int",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "unique": false,
+          "length": null,
+          "precision": null,
+          "scale": null,
+          "default": "0",
+          "comment": null,
+          "collation": null,
+          "enumItems": [],
+          "mappedType": "integer"
+        },
         "reference_transaction_id": {
           "name": "reference_transaction_id",
           "type": "uuid",
@@ -1016,6 +1051,18 @@
           "keyName": "wager_transactions_id_wallet_currency_unique",
           "primary": false,
           "unique": true
+        },
+        {
+          "columnNames": [
+            "reference_next_attempt_at",
+            "id"
+          ],
+          "composite": true,
+          "constraint": false,
+          "keyName": "wager_transactions_pending_reference_ready_index",
+          "primary": false,
+          "unique": false,
+          "where": "(status)::text = 'PENDING_REFERENCE'::text"
         },
         {
           "columnNames": [
@@ -1150,6 +1197,12 @@
           "columnName": "payload_hash"
         },
         {
+          "name": "wager_transactions_pending_reference_schedule_consistent",
+          "expression": "(status = 'PENDING_REFERENCE'::text) = (reference_next_attempt_at IS NOT NULL)",
+          "definition": "CHECK ((((status)::text = 'PENDING_REFERENCE'::text) = (reference_next_attempt_at IS NOT NULL)))",
+          "columnName": "reference_next_attempt_at"
+        },
+        {
           "name": "wager_transactions_processed_at_consistent",
           "expression": "(status = 'PROCESSED'::text) = (processed_at IS NOT NULL)",
           "definition": "CHECK ((((status)::text = 'PROCESSED'::text) = (processed_at IS NOT NULL)))",
@@ -1166,6 +1219,12 @@
           "expression": "(kind <> ALL (ARRAY['REFUND'::character varying, 'ROLLBACK'::character varying])) OR (reference_external_transaction_id IS NOT NULL)",
           "definition": "CHECK ((((kind)::text <> ALL ((ARRAY['REFUND'::character varying, 'ROLLBACK'::character varying])::text[])) OR (reference_external_transaction_id IS NOT NULL)))",
           "columnName": "kind"
+        },
+        {
+          "name": "wager_transactions_reference_retry_attempts_non_negative",
+          "expression": "reference_retry_attempts >= 0",
+          "definition": "CHECK ((reference_retry_attempts >= 0))",
+          "columnName": "reference_retry_attempts"
         },
         {
           "name": "wager_transactions_resulting_balance_non_negative",

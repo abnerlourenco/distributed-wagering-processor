@@ -6,6 +6,7 @@ import { AppModule } from '../src/infra/app.module.js';
 import { OutboxEventConsumerWorker } from '../src/infra/messaging/inbox/outbox-event-consumer.worker.js';
 import { OutboxPublisherWorker } from '../src/infra/messaging/outbox/outbox-publisher.worker.js';
 import { WagerCommandConsumerWorker } from '../src/infra/messaging/commands/wager-command-consumer.worker.js';
+import { PendingReferenceRetryWorker } from '../src/infra/messaging/references/pending-reference-retry.worker.js';
 
 describe('AppController (e2e)', () => {
   let app: INestApplication<App>;
@@ -19,6 +20,8 @@ describe('AppController (e2e)', () => {
       .overrideProvider(OutboxPublisherWorker)
       .useValue({})
       .overrideProvider(WagerCommandConsumerWorker)
+      .useValue({})
+      .overrideProvider(PendingReferenceRetryWorker)
       .useValue({})
       .compile();
 

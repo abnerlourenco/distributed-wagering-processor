@@ -38,11 +38,25 @@ export class WagerTransactionEntity {
   @Property({ length: 3 })
   currency!: string;
 
-  @Property({ fieldName: 'reference_external_transaction_id', length: 255, nullable: true })
+  @Property({
+    fieldName: 'reference_external_transaction_id',
+    length: 255,
+    nullable: true,
+  })
   referenceExternalTransactionId?: string;
 
-  @Property({ fieldName: 'reference_transaction_id', type: 'uuid', nullable: true })
+  @Property({
+    fieldName: 'reference_transaction_id',
+    type: 'uuid',
+    nullable: true,
+  })
   referenceTransactionId?: string;
+
+  @Property({ fieldName: 'reference_retry_attempts', default: 0 })
+  referenceRetryAttempts?: number;
+
+  @Property({ fieldName: 'reference_next_attempt_at', nullable: true })
+  referenceNextAttemptAt: Date | null = null;
 
   @Property({ length: 24 })
   status!: string;
