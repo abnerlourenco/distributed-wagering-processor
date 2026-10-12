@@ -12,6 +12,11 @@ export interface ReceivedSqsMessage {
   body: string;
 }
 
+export interface SqsSendOptions {
+  messageGroupId?: string;
+  messageDeduplicationId?: string;
+}
+
 export class SqsMessageAdapter {
   constructor(private readonly client: SQSClient) {}
 
@@ -27,9 +32,18 @@ export class SqsMessageAdapter {
     return result.QueueUrl;
   }
 
-  async sendMessage(queueUrl: string, body: string): Promise<string> {
+  async sendMessage(
+    queueUrl: string,
+    body: string,
+    options: SqsSendOptions = {},
+  ): Promise<string> {
     const result = await this.client.send(
-      new SendMessageCommand({ QueueUrl: queueUrl, MessageBody: body }),
+      new SendMessageCommand({
+        QueueUrl: queueUrl,
+        MessageBody: body,
+        MessageGroupId: options.messageGroupId,
+        MessageDeduplicationId: options.messageDeduplicationId,
+      }),
     );
 
     if (!result.MessageId) {
@@ -42,6 +56,7 @@ export class SqsMessageAdapter {
   async receiveMessage(
     queueUrl: string,
     waitTimeSeconds = 10,
+    abortSignal?: AbortSignal,
   ): Promise<ReceivedSqsMessage | undefined> {
     const result = await this.client.send(
       new ReceiveMessageCommand({
@@ -49,6 +64,7 @@ export class SqsMessageAdapter {
         MaxNumberOfMessages: 1,
         WaitTimeSeconds: waitTimeSeconds,
       }),
+      { abortSignal },
     );
     const message = result.Messages?.[0];
 

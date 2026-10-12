@@ -1,12 +1,11 @@
-import { createHash } from 'node:crypto';
 import type { Money } from '../../../../core/domain/money.js';
-import {
-  WagerTransaction,
-  WagerTransactionKind,
-} from '../../enterprise/entities/wager-transaction.js';
+import { WagerTransactionKind } from '../../enterprise/entities/wager-transaction.js';
 import type { ProcessWagerTransactionsRepository } from '../repositories/process-wager-transactions-repository.js';
+import { createWagerTransaction } from './create-wager-transaction.js';
 
 export interface ProcessWagerTransactionRequest {
+  transactionId?: string;
+  createdAt?: Date;
   providerId: string;
   externalTransactionId: string;
   idempotencyKey: string;
@@ -30,32 +29,6 @@ export class ProcessWagerTransactionUseCase {
   ) {}
 
   async execute(request: ProcessWagerTransactionRequest) {
-    const payloadHash = createHash('sha256')
-      .update(
-        JSON.stringify({
-          providerId: request.providerId,
-          externalTransactionId: request.externalTransactionId,
-          walletId: request.walletId,
-          playerId: request.playerId,
-          roundId: request.roundId,
-          gameId: request.gameId,
-          kind: request.kind,
-          amount: request.money.toString(),
-          currency: request.money.currency,
-          ...(request.referenceExternalTransactionId
-            ? {
-                referenceExternalTransactionId:
-                  request.referenceExternalTransactionId,
-              }
-            : {}),
-        }),
-      )
-      .digest('hex');
-    const transaction = WagerTransaction.create({
-      ...request,
-      payloadHash,
-    });
-
-    return this.transactionsRepository.process(transaction);
+    return this.transactionsRepository.process(createWagerTransaction(request));
   }
 }

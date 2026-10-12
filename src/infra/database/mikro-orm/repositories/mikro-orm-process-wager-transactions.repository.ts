@@ -39,8 +39,11 @@ export class MikroOrmProcessWagerTransactionsRepository implements ProcessWagerT
           providerId: transaction.providerId,
           idempotencyKey: transaction.idempotencyKey,
         });
-        if (existing) {
+        if (existing && existing.status !== WagerTransactionStatus.Pending) {
           return this.replay(existing, transaction);
+        }
+        if (existing && existing.id !== transaction.id) {
+          throw new IdempotencyConflictError();
         }
 
         const walletEntity = await entityManager.findOne(
@@ -62,9 +65,16 @@ export class MikroOrmProcessWagerTransactionsRepository implements ProcessWagerT
             providerId: transaction.providerId,
             idempotencyKey: transaction.idempotencyKey,
           },
+          { refresh: true },
         );
-        if (concurrentReplay) {
+        if (
+          concurrentReplay &&
+          concurrentReplay.status !== WagerTransactionStatus.Pending
+        ) {
           return this.replay(concurrentReplay, transaction);
+        }
+        if (concurrentReplay && concurrentReplay.id !== transaction.id) {
+          throw new IdempotencyConflictError();
         }
 
         const existingExternalTransaction = await entityManager.findOne(
@@ -74,7 +84,10 @@ export class MikroOrmProcessWagerTransactionsRepository implements ProcessWagerT
             externalTransactionId: transaction.externalTransactionId,
           },
         );
-        if (existingExternalTransaction) {
+        if (
+          existingExternalTransaction &&
+          existingExternalTransaction.id !== transaction.id
+        ) {
           throw new WagerTransactionAlreadyExistsError();
         }
 
@@ -313,8 +326,30 @@ export class MikroOrmProcessWagerTransactionsRepository implements ProcessWagerT
         }
 
         const resultBalance = wallet.balance;
-        const transactionEntity = entityManager.create(WagerTransactionEntity, {
-          id: transaction.id,
+        const transactionEntity =
+          existing ??
+          entityManager.create(WagerTransactionEntity, {
+            id: transaction.id,
+            providerId: transaction.providerId,
+            externalTransactionId: transaction.externalTransactionId,
+            idempotencyKey: transaction.idempotencyKey,
+            payloadHash: transaction.payloadHash,
+            walletId: transaction.walletId,
+            playerId: transaction.playerId,
+            roundId: transaction.roundId,
+            gameId: transaction.gameId,
+            kind: transaction.kind,
+            amount: transaction.money.toString(),
+            currency: transaction.money.currency,
+            referenceExternalTransactionId:
+              transaction.referenceExternalTransactionId,
+            status: transaction.status,
+            failureCode: transaction.failureCode,
+            resultingBalance: resultBalance.toString(),
+            createdAt: transaction.createdAt,
+            processedAt: transaction.processedAt,
+          });
+        Object.assign(transactionEntity, {
           providerId: transaction.providerId,
           externalTransactionId: transaction.externalTransactionId,
           idempotencyKey: transaction.idempotencyKey,
@@ -335,7 +370,9 @@ export class MikroOrmProcessWagerTransactionsRepository implements ProcessWagerT
           createdAt: transaction.createdAt,
           processedAt: transaction.processedAt,
         });
-        entityManager.persist(transactionEntity);
+        if (!existing) {
+          entityManager.persist(transactionEntity);
+        }
         await entityManager.flush();
 
         if (ledgerEntry) {

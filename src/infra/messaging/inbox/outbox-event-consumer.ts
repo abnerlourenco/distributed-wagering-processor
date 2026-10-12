@@ -6,6 +6,7 @@ import { outboxEventSchema } from './outbox-event.schema.js';
 export class OutboxEventConsumer {
   private readonly logger = new Logger(OutboxEventConsumer.name);
   private queueUrl: string | undefined;
+  private readonly abortController = new AbortController();
 
   constructor(
     private readonly repository: MikroOrmInboxConsumerRepository,
@@ -19,6 +20,7 @@ export class OutboxEventConsumer {
     const message = await this.sqs.receiveMessage(
       this.queueUrl,
       this.waitTimeSeconds,
+      this.abortController.signal,
     );
     if (!message) {
       return false;
@@ -36,5 +38,9 @@ export class OutboxEventConsumer {
       this.logger.debug(`Ignored duplicate Outbox event ${event.messageId}`);
     }
     return true;
+  }
+
+  stop(): void {
+    this.abortController.abort();
   }
 }

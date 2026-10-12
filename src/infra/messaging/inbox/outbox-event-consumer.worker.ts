@@ -25,6 +25,7 @@ export class OutboxEventConsumerWorker
 
   onApplicationShutdown(): void {
     this.stopped = true;
+    this.consumer.stop();
     if (this.timer) {
       clearTimeout(this.timer);
     }
@@ -47,10 +48,12 @@ export class OutboxEventConsumerWorker
       const consumed = await this.consumer.consumeOne();
       nextDelay = consumed ? 0 : EMPTY_QUEUE_DELAY_MS;
     } catch (error) {
-      const errorName =
-        error instanceof Error ? error.name : 'UnknownConsumerError';
-      this.logger.error(`Outbox event consumption failed (${errorName})`);
-      nextDelay = ERROR_DELAY_MS;
+      if (!this.stopped) {
+        const errorName =
+          error instanceof Error ? error.name : 'UnknownConsumerError';
+        this.logger.error(`Outbox event consumption failed (${errorName})`);
+        nextDelay = ERROR_DELAY_MS;
+      }
     } finally {
       this.schedule(nextDelay);
     }

@@ -28,6 +28,7 @@ POST {{baseUrl}}/wallets/{{createWallet.response.body.$.id}}/reconciliation
 Accept: application/json
 
 ### Submit a BET
+# The API returns 202 while the command is queued. Poll the transaction endpoint for its final status.
 # @name submitBet
 POST {{baseUrl}}/wagering/transactions
 Idempotency-Key: {{providerId}}:transaction-123
@@ -47,7 +48,11 @@ Content-Type: application/json
   }
 }
 
-### Submit a WIN for the processed BET above
+### Check the BET status and resulting balance
+GET {{baseUrl}}/wagering/transactions/{{submitBet.response.body.$.transactionId}}
+Accept: application/json
+
+### Submit a WIN for the BET above
 POST {{baseUrl}}/wagering/transactions
 Idempotency-Key: {{providerId}}:win-123
 Content-Type: application/json

@@ -28,6 +28,19 @@ export class MikroOrmOutboxPublisherRepository {
               and "locked_at" < current_timestamp - interval '5 minutes'
             )
           )
+          and (
+            "event_type" <> 'WagerTransactionRequested'
+            or not exists (
+              select 1
+              from "outbox_messages" as earlier
+              where earlier."event_type" = 'WagerTransactionRequested'
+                and earlier."aggregate_type" = "outbox_messages"."aggregate_type"
+                and earlier."aggregate_id" = "outbox_messages"."aggregate_id"
+                and earlier."status" <> 'PUBLISHED'
+                and (earlier."occurred_at", earlier."id")
+                    < ("outbox_messages"."occurred_at", "outbox_messages"."id")
+            )
+          )
           order by "available_at", "occurred_at", "id"
           limit ?
           for update skip locked

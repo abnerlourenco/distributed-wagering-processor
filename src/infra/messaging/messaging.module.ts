@@ -9,10 +9,15 @@ import { MikroOrmInboxConsumerRepository } from './inbox/mikro-orm-inbox-consume
 import { OutboxEventConsumer } from './inbox/outbox-event-consumer.js';
 import { OutboxEventConsumerWorker } from './inbox/outbox-event-consumer.worker.js';
 import { SqsMessageAdapter } from './sqs/sqs-message-adapter.js';
+import { WageringModule } from '../http/wagering/wagering.module.js';
+import { WagerCommandConsumer } from './commands/wager-command-consumer.js';
+import { WagerCommandConsumerWorker } from './commands/wager-command-consumer.worker.js';
+import { ProcessWagerTransactionUseCase } from '../../domain/wagering/application/use-cases/process-wager-transaction.js';
 
 const SQS_CLIENT = Symbol('SQS_CLIENT');
 
 @Module({
+  imports: [WageringModule],
   providers: [
     {
       provide: SQS_CLIENT,
@@ -42,7 +47,13 @@ const SQS_CLIENT = Symbol('SQS_CLIENT');
       useFactory: (
         repository: MikroOrmOutboxPublisherRepository,
         sqs: SqsMessageAdapter,
-      ) => new OutboxPublisher(repository, sqs, env.LOCALSTACK_QUEUE_NAME),
+      ) =>
+        new OutboxPublisher(
+          repository,
+          sqs,
+          env.LOCALSTACK_QUEUE_NAME,
+          env.LOCALSTACK_COMMAND_QUEUE_NAME,
+        ),
       inject: [MikroOrmOutboxPublisherRepository, SqsMessageAdapter],
     },
     OutboxPublisherWorker,
@@ -61,6 +72,20 @@ const SQS_CLIENT = Symbol('SQS_CLIENT');
       inject: [MikroOrmInboxConsumerRepository, SqsMessageAdapter],
     },
     OutboxEventConsumerWorker,
+    {
+      provide: WagerCommandConsumer,
+      useFactory: (
+        processTransaction: ProcessWagerTransactionUseCase,
+        sqs: SqsMessageAdapter,
+      ) =>
+        new WagerCommandConsumer(
+          processTransaction,
+          sqs,
+          env.LOCALSTACK_COMMAND_QUEUE_NAME,
+        ),
+      inject: [ProcessWagerTransactionUseCase, SqsMessageAdapter],
+    },
+    WagerCommandConsumerWorker,
   ],
 })
 export class MessagingModule {}

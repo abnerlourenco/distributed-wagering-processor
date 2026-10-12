@@ -7,24 +7,41 @@ const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
 
 export class OutboxPublisher {
   private readonly logger = new Logger(OutboxPublisher.name);
-  private queueUrl: string | undefined;
+  private readonly queueUrls = new Map<string, string>();
 
   constructor(
     private readonly repository: MikroOrmOutboxPublisherRepository,
     private readonly sqs: SqsMessageAdapter,
     private readonly queueName: string,
+    private readonly commandQueueName?: string,
   ) {}
 
   async publishAvailable(): Promise<{ published: number; failed: number }> {
-    this.queueUrl ??= await this.sqs.getQueueUrl(this.queueName);
     const messages = await this.repository.claimAvailable(OUTBOX_BATCH_SIZE);
     let published = 0;
     let failed = 0;
 
     for (const message of messages) {
       try {
+        const isCommand = message.eventType === 'WagerTransactionRequested';
+        const targetQueue = isCommand ? this.commandQueueName : this.queueName;
+        if (!targetQueue) {
+          throw new Error('Wager command queue is not configured');
+        }
+        let queueUrl = this.queueUrls.get(targetQueue);
+        if (!queueUrl) {
+          queueUrl = await this.sqs.getQueueUrl(targetQueue);
+          this.queueUrls.set(targetQueue, queueUrl);
+        }
+
+        const payload = message.payload;
+        const walletId =
+          typeof payload.walletId === 'string' ? payload.walletId : undefined;
+        if (isCommand && !walletId) {
+          throw new Error('Wager command is missing its wallet group ID');
+        }
         await this.sqs.sendMessage(
-          this.queueUrl,
+          queueUrl,
           JSON.stringify({
             messageId: message.id,
             aggregateType: message.aggregateType,
@@ -33,6 +50,12 @@ export class OutboxPublisher {
             occurredAt: new Date(message.occurredAt).toISOString(),
             payload: message.payload,
           }),
+          isCommand
+            ? {
+                messageGroupId: walletId,
+                messageDeduplicationId: message.id,
+              }
+            : undefined,
         );
       } catch (error) {
         const errorCode = this.getErrorCode(error);

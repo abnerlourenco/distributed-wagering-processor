@@ -6,6 +6,10 @@ const envSchema = z.object({
   AWS_REGION: z.string().min(1).default('us-east-1'),
   LOCALSTACK_ENDPOINT: z.string().url().default('http://localhost:4566'),
   LOCALSTACK_QUEUE_NAME: z.string().min(1).default('wagering-events'),
+  LOCALSTACK_COMMAND_QUEUE_NAME: z
+    .string()
+    .min(1)
+    .default('wagering-commands.fifo'),
   POSTGRES_DB: z.string().min(1),
   POSTGRES_HOST: z.string().min(1).default('localhost'),
   POSTGRES_PASSWORD: z.string().min(1),
