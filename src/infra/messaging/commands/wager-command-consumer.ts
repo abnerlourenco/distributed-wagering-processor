@@ -10,6 +10,8 @@ import {
 } from '../inbox/mikro-orm-inbox-consumer.repository.js';
 import { SqsMessageAdapter } from '../sqs/sqs-message-adapter.js';
 import { wagerCommandSchema } from './wager-command.schema.js';
+import { MetricsRegistry } from '../../observability/metrics-registry.js';
+import { runWithObservationContext } from '../../observability/observation-context.js';
 
 const MAX_RETRY_DELAY_SECONDS = 300;
 const COMMAND_CONSUMER_NAME = 'wager-transaction-command-consumer';
@@ -26,6 +28,7 @@ export class WagerCommandConsumer {
     private readonly sqs: SqsMessageAdapter,
     private readonly queueName: string,
     private readonly waitTimeSeconds = 10,
+    private readonly metrics?: MetricsRegistry,
   ) {}
 
   async consumeOne(): Promise<boolean> {
@@ -44,57 +47,82 @@ export class WagerCommandConsumer {
     try {
       command = wagerCommandSchema.parse(JSON.parse(message.body));
     } catch (error) {
-      await this.deferOrDeadLetter(queueUrl, message, error);
+      await runWithObservationContext(
+        {
+          correlationId: message.messageId,
+          messageId: message.messageId,
+        },
+        () => this.deferOrDeadLetter(queueUrl, message, error),
+      );
       return true;
     }
 
-    try {
-      const inboxResult = await this.inbox.recordReceived(
-        COMMAND_CONSUMER_NAME,
-        COMMAND_INBOX_SOURCE,
-        {
-          messageId: command.messageId,
-          messageType: command.type,
-          payload: command.data,
-        },
-      );
-
-      await this.processTransaction.execute({
-        transactionId:
-          command.data.transactionId ??
-          this.stableTransactionId(command.messageId),
-        createdAt: new Date(command.data.createdAt ?? command.occurredAt),
-        providerId: command.data.providerId,
-        externalTransactionId: command.data.externalTransactionId,
-        idempotencyKey: command.data.idempotencyKey,
+    const transactionId =
+      command.data.transactionId ?? this.stableTransactionId(command.messageId);
+    await runWithObservationContext(
+      {
+        correlationId: command.correlationId ?? command.messageId,
+        messageId: command.messageId,
+        transactionId,
         walletId: command.data.walletId,
-        playerId: command.data.playerId,
-        roundId: command.data.roundId,
-        gameId: command.data.gameId,
-        kind: command.data.kind,
-        money: Money.from(command.data.money),
-        ...(command.data.referenceExternalTransactionId
-          ? {
-              referenceExternalTransactionId:
-                command.data.referenceExternalTransactionId,
-            }
-          : {}),
-      });
+        providerId: command.data.providerId,
+      },
+      async () => {
+        const startedAt = performance.now();
+        try {
+          const inboxResult = await this.inbox.recordReceived(
+            COMMAND_CONSUMER_NAME,
+            COMMAND_INBOX_SOURCE,
+            {
+              messageId: command.messageId,
+              messageType: command.type,
+              payload: command.data,
+            },
+          );
+          if (inboxResult.duplicate) {
+            this.metrics?.duplicates.labels('sqs_inbox').inc();
+          }
 
-      await this.sqs.deleteMessage(queueUrl, message.receiptHandle);
-      this.logger.debug(
-        `${inboxResult.duplicate ? 'Reprocessed duplicate' : 'Processed'} wager command ${command.messageId}`,
-      );
-    } catch (error) {
-      if (error instanceof DomainError) {
-        this.logger.warn(
-          `Wager command ${command.messageId} reached a terminal business error (${error.name}); acknowledging`,
-        );
-        await this.sqs.deleteMessage(queueUrl, message.receiptHandle);
-      } else {
-        await this.deferOrDeadLetter(queueUrl, message, error);
-      }
-    }
+          await this.processTransaction.execute({
+            transactionId,
+            createdAt: new Date(command.data.createdAt ?? command.occurredAt),
+            providerId: command.data.providerId,
+            externalTransactionId: command.data.externalTransactionId,
+            idempotencyKey: command.data.idempotencyKey,
+            walletId: command.data.walletId,
+            playerId: command.data.playerId,
+            roundId: command.data.roundId,
+            gameId: command.data.gameId,
+            kind: command.data.kind,
+            money: Money.from(command.data.money),
+            ...(command.data.referenceExternalTransactionId
+              ? {
+                  referenceExternalTransactionId:
+                    command.data.referenceExternalTransactionId,
+                }
+              : {}),
+          });
+
+          await this.sqs.deleteMessage(queueUrl, message.receiptHandle);
+          this.logger.debug(
+            `${inboxResult.duplicate ? 'Reprocessed duplicate' : 'Processed'} wager command`,
+          );
+        } catch (error) {
+          if (error instanceof DomainError) {
+            this.logger.warn(
+              `Wager command reached a terminal business error (${error.name}); acknowledging`,
+            );
+            await this.sqs.deleteMessage(queueUrl, message.receiptHandle);
+          } else {
+            await this.deferOrDeadLetter(queueUrl, message, error);
+          }
+        } finally {
+          this.metrics?.processingDurationSeconds.observe(
+            (performance.now() - startedAt) / 1000,
+          );
+        }
+      },
+    );
     return true;
   }
 
@@ -125,6 +153,7 @@ export class WagerCommandConsumer {
 
     const category = permanent ? 'permanent' : 'transient';
     const errorName = error instanceof Error ? error.name : 'UnknownError';
+    this.metrics?.retries.labels('sqs_consumer').inc();
     this.logger.warn(
       `Wager command ${category} failure (${errorName}); retry ${message.receiveCount} scheduled`,
     );

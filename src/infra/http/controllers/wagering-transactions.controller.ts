@@ -7,6 +7,7 @@ import {
   WagerTransactionStatus,
 } from '../../../domain/wagering/enterprise/entities/wager-transaction.js';
 import { QueueWagerTransactionUseCase } from '../../../domain/wagering/application/use-cases/queue-wager-transaction.js';
+import { addObservationFields } from '../../observability/observation-context.js';
 
 const submitWagerTransactionBodySchema = z
   .object({
@@ -81,11 +82,16 @@ export class WageringTransactionsController {
   ) {
     const request = submitWagerTransactionBodySchema.parse(body);
     const key = idempotencyKeySchema.parse(idempotencyKey);
+    addObservationFields({
+      walletId: request.walletId,
+      providerId: request.providerId,
+    });
     const result = await this.queueTransaction.execute({
       ...request,
       idempotencyKey: key,
       money: Money.from(request.money),
     });
+    addObservationFields({ transactionId: result.transaction.id });
 
     if (result.transaction.status === WagerTransactionStatus.Rejected) {
       response.status(422);

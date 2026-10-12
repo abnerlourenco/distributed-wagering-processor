@@ -1,4 +1,3 @@
-
 import { describe, expect, it, vi } from 'vitest';
 import { OutboxPublisherWorker } from '../src/infra/messaging/outbox/outbox-publisher.worker.js';
 import { OutboxPublisher } from '../src/infra/messaging/outbox/outbox-publisher.js';
@@ -57,7 +56,7 @@ describe('OutboxPublisherWorker shutdown', () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(publisher.publishAvailable).toHaveBeenCalledOnce();
 
-      worker.onApplicationShutdown();
+      await worker.onApplicationShutdown();
 
       await vi.advanceTimersByTimeAsync(10_000);
 

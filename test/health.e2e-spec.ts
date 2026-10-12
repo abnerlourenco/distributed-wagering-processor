@@ -14,7 +14,14 @@ describe('Health HTTP', () => {
   let readinessCalls: number;
 
   beforeEach(async () => {
-    readinessResult = { status: 'ready', checks: { database: 'up' } };
+    readinessResult = {
+      status: 'ready',
+      checks: {
+        database: 'up',
+        commandQueue: 'up',
+        deadLetterQueue: 'up',
+      },
+    };
     readinessCalls = 0;
     const moduleFixture: TestingModule = await Test.createTestingModule({
       controllers: [HealthController],
@@ -51,7 +58,11 @@ describe('Health HTTP', () => {
   it('returns 503 and the failed dependency when PostgreSQL is unavailable', async () => {
     readinessResult = {
       status: 'not_ready',
-      checks: { database: 'down' },
+      checks: {
+        database: 'down',
+        commandQueue: 'up',
+        deadLetterQueue: 'up',
+      },
     };
 
     await request(app.getHttpServer())
@@ -59,7 +70,34 @@ describe('Health HTTP', () => {
       .expect(503)
       .expect({
         status: 'not_ready',
-        checks: { database: 'down' },
+        checks: {
+          database: 'down',
+          commandQueue: 'up',
+          deadLetterQueue: 'up',
+        },
+      });
+  });
+
+  it('returns 503 when a required SQS queue is unavailable', async () => {
+    readinessResult = {
+      status: 'not_ready',
+      checks: {
+        database: 'up',
+        commandQueue: 'down',
+        deadLetterQueue: 'up',
+      },
+    };
+
+    await request(app.getHttpServer())
+      .get('/health/ready')
+      .expect(503)
+      .expect({
+        status: 'not_ready',
+        checks: {
+          database: 'up',
+          commandQueue: 'down',
+          deadLetterQueue: 'up',
+        },
       });
   });
 });

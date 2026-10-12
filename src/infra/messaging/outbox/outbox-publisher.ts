@@ -1,6 +1,8 @@
 import { Logger } from '@nestjs/common';
 import { MikroOrmOutboxPublisherRepository } from './mikro-orm-outbox-publisher.repository.js';
 import { SqsMessageAdapter } from '../sqs/sqs-message-adapter.js';
+import { MetricsRegistry } from '../../observability/metrics-registry.js';
+import { runWithObservationContext } from '../../observability/observation-context.js';
 
 const OUTBOX_BATCH_SIZE = 10;
 const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
@@ -16,6 +18,7 @@ export class OutboxPublisher {
     private readonly queueName: string,
     private readonly commandQueueName?: string,
     private readonly maxAttempts = MAX_OUTBOX_ATTEMPTS,
+    private readonly metrics?: MetricsRegistry,
   ) {}
 
   async publishAvailable(): Promise<{ published: number; failed: number }> {
@@ -44,11 +47,13 @@ export class OutboxPublisher {
           throw new Error('Wager command is missing its wallet group ID');
         }
         sendAttempted = true;
-        const { amount, currency, ...commandData } = message.payload;
+        const { amount, currency, correlationId, ...commandData } =
+          message.payload;
         const envelope = isCommand
           ? {
               messageId: message.id,
               type: message.eventType,
+              ...(typeof correlationId === 'string' ? { correlationId } : {}),
               occurredAt: new Date(message.occurredAt).toISOString(),
               data: {
                 ...commandData,
@@ -90,11 +95,15 @@ export class OutboxPublisher {
           );
           if (markedDead) {
             failed += 1;
-            this.logger.error(
+            this.logForMessage(
+              message,
+              'error',
               `Outbox message ${message.id} moved to DEAD after ${message.attempts} attempts (${errorCode})`,
             );
           } else {
-            this.logger.warn(
+            this.logForMessage(
+              message,
+              'warn',
               `Outbox message ${message.id} could not be marked DEAD because its claim is no longer current`,
             );
           }
@@ -116,11 +125,16 @@ export class OutboxPublisher {
 
         if (markedFailed) {
           failed += 1;
-          this.logger.warn(
+          this.metrics?.retries.labels('outbox_publish').inc();
+          this.logForMessage(
+            message,
+            'warn',
             `Outbox message ${message.id} publication failed (${errorCode}); retry scheduled`,
           );
         } else {
-          this.logger.warn(
+          this.logForMessage(
+            message,
+            'warn',
             `Outbox message ${message.id} could not be marked failed because its claim is no longer current`,
           );
         }
@@ -131,7 +145,9 @@ export class OutboxPublisher {
       if (markedPublished) {
         published += 1;
       } else {
-        this.logger.warn(
+        this.logForMessage(
+          message,
+          'warn',
           `Outbox message ${message.id} was sent but its claim is no longer current; it may be delivered again`,
         );
       }
@@ -147,5 +163,39 @@ export class OutboxPublisher {
 
     const safeName = error.name.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 128);
     return safeName || 'PublishError';
+  }
+
+  private logForMessage(
+    message: {
+      id: string;
+      aggregateId: string;
+      payload: Record<string, unknown>;
+    },
+    level: 'error' | 'warn',
+    logMessage: string,
+  ): void {
+    const context = {
+      correlationId:
+        typeof message.payload.correlationId === 'string'
+          ? message.payload.correlationId
+          : message.id,
+      messageId: message.id,
+      transactionId:
+        typeof message.payload.transactionId === 'string'
+          ? message.payload.transactionId
+          : undefined,
+      walletId:
+        typeof message.payload.walletId === 'string'
+          ? message.payload.walletId
+          : message.aggregateId,
+      providerId:
+        typeof message.payload.providerId === 'string'
+          ? message.payload.providerId
+          : undefined,
+    };
+
+    runWithObservationContext(context, () => {
+      this.logger[level](logMessage);
+    });
   }
 }

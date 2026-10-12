@@ -15,6 +15,7 @@ import { WagerCommandConsumerWorker } from './commands/wager-command-consumer.wo
 import { ProcessWagerTransactionUseCase } from '../../domain/wagering/application/use-cases/process-wager-transaction.js';
 import { MikroOrmPendingReferenceRetriesRepository } from '../database/mikro-orm/repositories/mikro-orm-pending-reference-retries.repository.js';
 import { PendingReferenceRetryWorker } from './references/pending-reference-retry.worker.js';
+import { MetricsRegistry } from '../observability/metrics-registry.js';
 
 const SQS_CLIENT = Symbol('SQS_CLIENT');
 
@@ -49,6 +50,7 @@ const SQS_CLIENT = Symbol('SQS_CLIENT');
       useFactory: (
         repository: MikroOrmOutboxPublisherRepository,
         sqs: SqsMessageAdapter,
+        metrics: MetricsRegistry,
       ) =>
         new OutboxPublisher(
           repository,
@@ -56,8 +58,13 @@ const SQS_CLIENT = Symbol('SQS_CLIENT');
           env.LOCALSTACK_QUEUE_NAME,
           env.LOCALSTACK_COMMAND_QUEUE_NAME,
           env.OUTBOX_MAX_ATTEMPTS,
+          metrics,
         ),
-      inject: [MikroOrmOutboxPublisherRepository, SqsMessageAdapter],
+      inject: [
+        MikroOrmOutboxPublisherRepository,
+        SqsMessageAdapter,
+        MetricsRegistry,
+      ],
     },
     OutboxPublisherWorker,
     {
@@ -88,20 +95,25 @@ const SQS_CLIENT = Symbol('SQS_CLIENT');
         processTransaction: ProcessWagerTransactionUseCase,
         inbox: MikroOrmInboxConsumerRepository,
         sqs: SqsMessageAdapter,
+        metrics: MetricsRegistry,
       ) =>
         new WagerCommandConsumer(
           processTransaction,
           inbox,
           sqs,
           env.LOCALSTACK_COMMAND_QUEUE_NAME,
+          10,
+          metrics,
         ),
       inject: [
         ProcessWagerTransactionUseCase,
         MikroOrmInboxConsumerRepository,
         SqsMessageAdapter,
+        MetricsRegistry,
       ],
     },
     WagerCommandConsumerWorker,
   ],
+  exports: [SqsMessageAdapter],
 })
 export class MessagingModule {}

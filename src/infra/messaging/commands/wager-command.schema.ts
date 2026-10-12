@@ -5,6 +5,7 @@ export const wagerCommandSchema = z
   .object({
     messageId: z.string().trim().min(1).max(255),
     type: z.literal('WagerTransactionRequested'),
+    correlationId: z.string().trim().min(1).max(128).optional(),
     occurredAt: z.iso.datetime(),
     data: z
       .object({

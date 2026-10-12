@@ -14,9 +14,14 @@ import { OutboxMessageEntity } from '../entities/outbox-message.entity.js';
 import { WagerTransactionEntity } from '../entities/wager-transaction.entity.js';
 import { WalletEntity } from '../entities/wallet.entity.js';
 import { MikroOrmWagerTransactionsRepository } from './mikro-orm-wager-transactions.repository.js';
+import { MetricsRegistry } from '../../../observability/metrics-registry.js';
+import { getObservationContext } from '../../../observability/observation-context.js';
 
 export class MikroOrmQueueWagerTransactionsRepository implements QueueWagerTransactionsRepository {
-  constructor(private readonly entityManager: EntityManager) {}
+  constructor(
+    private readonly entityManager: EntityManager,
+    private readonly metrics?: MetricsRegistry,
+  ) {}
 
   async enqueue(
     transaction: WagerTransaction,
@@ -56,6 +61,8 @@ export class MikroOrmQueueWagerTransactionsRepository implements QueueWagerTrans
           throw new WalletNotFoundError();
         }
 
+        const correlationId = getObservationContext()?.correlationId;
+
         entityManager.persist(
           entityManager.create(WagerTransactionEntity, {
             id: transaction.id,
@@ -86,6 +93,7 @@ export class MikroOrmQueueWagerTransactionsRepository implements QueueWagerTrans
             payload: {
               transactionId: transaction.id,
               createdAt: transaction.createdAt.toISOString(),
+              ...(correlationId ? { correlationId } : {}),
               providerId: transaction.providerId,
               externalTransactionId: transaction.externalTransactionId,
               idempotencyKey: transaction.idempotencyKey,
@@ -136,6 +144,8 @@ export class MikroOrmQueueWagerTransactionsRepository implements QueueWagerTrans
     existing: WagerTransactionEntity,
     request: WagerTransaction,
   ): QueueWagerTransactionResult {
+    this.metrics?.duplicates.labels('http_idempotency').inc();
+
     if (existing.idempotencyKey !== request.idempotencyKey) {
       throw new WagerTransactionAlreadyExistsError();
     }

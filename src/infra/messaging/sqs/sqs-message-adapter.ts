@@ -1,5 +1,6 @@
 import {
   DeleteMessageCommand,
+  GetQueueAttributesCommand,
   GetQueueUrlCommand,
   ReceiveMessageCommand,
   SendMessageCommand,
@@ -32,6 +33,27 @@ export class SqsMessageAdapter {
     }
 
     return result.QueueUrl;
+  }
+
+  async getApproximateQueueDepth(queueName: string): Promise<number> {
+    const queueUrl = await this.getQueueUrl(queueName);
+    const result = await this.client.send(
+      new GetQueueAttributesCommand({
+        QueueUrl: queueUrl,
+        AttributeNames: [
+          'ApproximateNumberOfMessages',
+          'ApproximateNumberOfMessagesNotVisible',
+          'ApproximateNumberOfMessagesDelayed',
+        ],
+      }),
+    );
+    const attributes = result.Attributes ?? {};
+
+    return [
+      attributes.ApproximateNumberOfMessages,
+      attributes.ApproximateNumberOfMessagesNotVisible,
+      attributes.ApproximateNumberOfMessagesDelayed,
+    ].reduce((total, value) => total + Number(value ?? 0), 0);
   }
 
   async sendMessage(

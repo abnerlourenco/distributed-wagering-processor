@@ -1,4 +1,3 @@
-
 import {
   Injectable,
   Logger,
@@ -8,6 +7,8 @@ import {
 import { Money } from '../../../core/domain/money.js';
 import { ProcessWagerTransactionUseCase } from '../../../domain/wagering/application/use-cases/process-wager-transaction.js';
 import { MikroOrmPendingReferenceRetriesRepository } from '../../database/mikro-orm/repositories/mikro-orm-pending-reference-retries.repository.js';
+import { MetricsRegistry } from '../../observability/metrics-registry.js';
+import { runWithObservationContext } from '../../observability/observation-context.js';
 
 const POLL_INTERVAL_MS = 1000;
 const BATCH_SIZE = 10;
@@ -25,6 +26,7 @@ export class PendingReferenceRetryWorker
   constructor(
     private readonly repository: MikroOrmPendingReferenceRetriesRepository,
     private readonly processTransaction: ProcessWagerTransactionUseCase,
+    private readonly metrics?: MetricsRegistry,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -72,41 +74,51 @@ export class PendingReferenceRetryWorker
           break;
         }
 
-        try {
-          await this.processTransaction.execute({
+        this.metrics?.retries.labels('pending_reference').inc();
+        await runWithObservationContext(
+          {
+            correlationId: transaction.id,
+            messageId: transaction.id,
             transactionId: transaction.id,
-            createdAt: new Date(transaction.createdAt),
-            providerId: transaction.providerId,
-            externalTransactionId: transaction.externalTransactionId,
-            idempotencyKey: transaction.idempotencyKey,
             walletId: transaction.walletId,
-            playerId: transaction.playerId,
-            roundId: transaction.roundId,
-            gameId: transaction.gameId,
-            kind: transaction.kind,
-            money: Money.from({
-              amount: transaction.amount,
-              currency: transaction.currency,
-            }),
-            referenceExternalTransactionId:
-              transaction.referenceExternalTransactionId,
-          });
-        } catch (error) {
-          const errorName =
-            error instanceof Error ? error.name : 'UnknownRetryError';
+            providerId: transaction.providerId,
+          },
+          async () => {
+            try {
+              await this.processTransaction.execute({
+                transactionId: transaction.id,
+                createdAt: new Date(transaction.createdAt),
+                providerId: transaction.providerId,
+                externalTransactionId: transaction.externalTransactionId,
+                idempotencyKey: transaction.idempotencyKey,
+                walletId: transaction.walletId,
+                playerId: transaction.playerId,
+                roundId: transaction.roundId,
+                gameId: transaction.gameId,
+                kind: transaction.kind,
+                money: Money.from({
+                  amount: transaction.amount,
+                  currency: transaction.currency,
+                }),
+                referenceExternalTransactionId:
+                  transaction.referenceExternalTransactionId,
+              });
+            } catch (error) {
+              const errorName =
+                error instanceof Error ? error.name : 'UnknownRetryError';
 
-          this.logger.error(
-            `Pending reference retry failed for transaction ${transaction.id} (${errorName})`,
-          );
-        }
+              this.logger.error(
+                `Pending reference retry failed (${errorName})`,
+              );
+            }
+          },
+        );
       }
     } catch (error) {
       const errorName =
         error instanceof Error ? error.name : 'UnknownRetryWorkerError';
 
-      this.logger.error(
-        `Pending reference retry cycle failed (${errorName})`,
-      );
+      this.logger.error(`Pending reference retry cycle failed (${errorName})`);
 
       nextDelay = ERROR_DELAY_MS;
     } finally {

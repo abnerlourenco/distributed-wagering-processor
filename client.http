@@ -8,7 +8,7 @@ POST {{baseUrl}}/wallets
 Content-Type: application/json
 
 {
-  "playerId": "15e304a7-bb8d-4cd2-a09e-98f87edf81a3",
+  "playerId": "69edf366-43ee-4b5e-81b0-0c68f339219f",
   "initialBalance": {
     "amount": "1000.00",
     "currency": "BRL"
@@ -31,12 +31,12 @@ Accept: application/json
 # The API returns 202 while the command is queued. Poll the transaction endpoint for its final status.
 # @name submitBet
 POST {{baseUrl}}/wagering/transactions
-Idempotency-Key: {{providerId}}:transaction-123
+Idempotency-Key: {{providerId}}:transaction-124
 Content-Type: application/json
 
 {
   "providerId": "{{providerId}}",
-  "externalTransactionId": "transaction-123",
+  "externalTransactionId": "transaction-124",
   "playerId": "{{createWallet.response.body.$.playerId}}",
   "walletId": "{{createWallet.response.body.$.id}}",
   "roundId": "round-987",
@@ -138,4 +138,8 @@ Accept: application/json
 
 ### Get transaction by provider and external ID
 GET {{baseUrl}}/providers/{{providerId}}/wagering/transactions/transaction-123
+Accept: application/json
+
+###
+GET {{baseUrl}}/metrics
 Accept: application/json

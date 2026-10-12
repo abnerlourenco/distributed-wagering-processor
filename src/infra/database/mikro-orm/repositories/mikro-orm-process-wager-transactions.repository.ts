@@ -31,9 +31,13 @@ import { WagerTransactionEntity } from '../entities/wager-transaction.entity.js'
 import { WalletEntity } from '../entities/wallet.entity.js';
 import { WalletLedgerEntryEntity } from '../entities/wallet-ledger-entry.entity.js';
 import { MikroOrmWagerTransactionsRepository } from './mikro-orm-wager-transactions.repository.js';
+import { MetricsRegistry } from '../../../observability/metrics-registry.js';
 
 export class MikroOrmProcessWagerTransactionsRepository implements ProcessWagerTransactionsRepository {
-  constructor(private readonly entityManager: EntityManager) {}
+  constructor(
+    private readonly entityManager: EntityManager,
+    private readonly metrics?: MetricsRegistry,
+  ) {}
 
   async process(
     transaction: WagerTransaction,
@@ -533,6 +537,9 @@ export class MikroOrmProcessWagerTransactionsRepository implements ProcessWagerT
         };
       });
     } catch (error) {
+      if (isPostgresLockConflict(error)) {
+        this.metrics?.lockConflicts.inc();
+      }
       if (!(error instanceof UniqueConstraintViolationException)) {
         throw error;
       }
@@ -603,4 +610,21 @@ export class MikroOrmProcessWagerTransactionsRepository implements ProcessWagerT
       idempotentReplay: true,
     };
   }
+}
+
+function isPostgresLockConflict(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+
+  const candidate = error as Record<string, unknown>;
+  if (
+    candidate.code === '40P01' ||
+    candidate.code === '55P03' ||
+    candidate.code === '40001'
+  ) {
+    return true;
+  }
+
+  return candidate.cause !== error && isPostgresLockConflict(candidate.cause);
 }

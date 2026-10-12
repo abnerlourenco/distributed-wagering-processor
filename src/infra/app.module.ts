@@ -7,6 +7,7 @@ import { WalletsModule } from './http/wallets/wallets.module.js';
 import { WageringModule } from './http/wagering/wagering.module.js';
 import { HealthModule } from './http/health/health.module.js';
 import { MessagingModule } from './messaging/messaging.module.js';
+import { ObservabilityModule } from './observability/observability.module.js';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { MessagingModule } from './messaging/messaging.module.js';
     WageringModule,
     HealthModule,
     MessagingModule,
+    ObservabilityModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -10,6 +10,10 @@ const envSchema = z.object({
     .string()
     .min(1)
     .default('wager-transactions.fifo'),
+  LOCALSTACK_COMMAND_DLQ_QUEUE_NAME: z
+    .string()
+    .min(1)
+    .default('wager-transactions-dlq.fifo'),
   OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(100).default(5),
   POSTGRES_DB: z.string().min(1),
   POSTGRES_HOST: z.string().min(1).default('localhost'),

@@ -17,6 +17,7 @@ import {
 } from '../../../domain/wallets/application/use-cases/get-wallet-ledger.js';
 import { OpenWalletUseCase } from '../../../domain/wallets/application/use-cases/open-wallet.js';
 import { ReconcileWalletUseCase } from '../../../domain/wallets/application/use-cases/reconcile-wallet.js';
+import { addObservationFields } from '../../observability/observation-context.js';
 
 const openWalletBodySchema = z.object({
   playerId: z.uuid(),
@@ -55,6 +56,7 @@ export class WalletsController {
     @Query() query: unknown,
   ) {
     const id = z.uuid().parse(walletId);
+    addObservationFields({ walletId: id });
     const request = walletLedgerQuerySchema.parse(query);
     const { entries, nextCursor } = await this.getWalletLedger.execute({
       walletId: id,
@@ -80,6 +82,7 @@ export class WalletsController {
   @HttpCode(200)
   async reconcile(@Param('walletId') walletId: string) {
     const id = z.uuid().parse(walletId);
+    addObservationFields({ walletId: id });
     const result = await this.reconcileWallet.execute(id);
 
     if (!result.consistent) {
@@ -101,6 +104,7 @@ export class WalletsController {
   @Get(':walletId')
   async findById(@Param('walletId') walletId: string) {
     const id = z.uuid().parse(walletId);
+    addObservationFields({ walletId: id });
     const { wallet } = await this.getWallet.execute(id);
 
     return {
@@ -121,6 +125,7 @@ export class WalletsController {
       playerId: request.playerId,
       initialBalance: Money.from(request.initialBalance),
     });
+    addObservationFields({ walletId: wallet.id });
 
     return {
       id: wallet.id,

@@ -42,8 +42,8 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 ## Health checks
 
 - `GET /health/live` indica que o processo HTTP está ativo e não consulta dependências externas.
-- `GET /health/ready` verifica a conexão com PostgreSQL; retorna `200` com `status: ready` quando disponível ou `503` com `status: not_ready` quando indisponível. A resposta não expõe detalhes internos da falha.
-- As rotas de health check não exigem autenticação. Mesmo com LocalStack disponível no ambiente local, a aplicação ainda não verifica SQS na readiness; isso será ligado ao adaptador na etapa de integração.
+- `GET /health/ready` verifica PostgreSQL, a fila de comandos e sua DLQ; retorna `200` com `status: ready` somente quando as três dependências estão disponíveis, ou `503` com `status: not_ready`. A resposta não expõe detalhes internos da falha.
+- As rotas de health check não exigem autenticação.
 
 ## Módulo Wallets
 
@@ -97,6 +97,14 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 - O consumidor ativa hooks para `SIGINT` e `SIGTERM`: interrompe o long-poll e aguarda o ciclo já recebido terminar, incluindo commit e ack. Se a instância cair abruptamente antes disso, o visibility timeout permite redelivery.
 - O consumidor da fila `wagering-events` valida o envelope `WagerTransactionProcessed`, grava a mensagem no Inbox com estado `RECEIVED` e só então remove a mensagem SQS. A chave é `(consumer_name, source, message_id)`; payload igual é tratado como entrega duplicada e payload diferente sob o mesmo ID gera conflito sem confirmar a mensagem. Para comandos, o `source` é fixo (`wager-transactions.fifo`), então a unicidade efetiva corresponde a `(consumer_name, message_id)`. O Inbox mantém as mensagens recebidas mesmo quando o processamento falha; redelivery repete o caso de uso, em vez de descartar uma mensagem por já existir no Inbox.
 
+## Observabilidade
+
+- O NestJS usa `StructuredLogger`, que escreve uma linha JSON por log e sempre inclui `correlationId`, `messageId`, `transactionId`, `walletId` e `providerId` (nulos quando não aplicáveis). O middleware aceita um `x-correlation-id` seguro ou cria um UUID, devolve-o no response header e registra método, status e duração sem logar URL, headers ou body. O correlation ID é carregado no comando Outbox/SQS; mensagens sem esse campo usam o ID da mensagem.
+- Logs de processamento incluem somente identificadores, etapa e nome da classe de erro. Não registrar payload de aposta, valores monetários, tokens ou detalhes/cause SQL.
+- `GET /metrics` expõe Prometheus. `wager_transactions{status}` é um gauge calculado do PostgreSQL; `wagering_duplicates_total`, `wagering_retries_total` e `wagering_lock_conflicts_total` são counters; `wagering_dlq_messages` mede mensagens visíveis, em voo ou atrasadas na DLQ; `wagering_outbox_lag_seconds` mede a idade do comando mais antigo aguardando publicação; `wagering_transaction_processing_duration_seconds` é o histograma de latência. Métricas do processo Node.js também são coletadas. IDs não são usados como labels para evitar alta cardinalidade.
+- `/health/live` verifica somente que o processo HTTP responde. `/health/ready` verifica PostgreSQL, fila principal de comandos e DLQ; retorna `503` se alguma dependência obrigatória estiver indisponível.
+- Em produção, restringir `/metrics` à rede de monitoramento e exportar logs JSON para o agregador operacional.
+
 ## Decisões tomadas
 
 1- Foi realizada a decisão de utilizar o MikroORM para mapeamento do banco de dados postgres.
@@ -145,7 +153,7 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 
   `create-queue` é idempotente se os atributos imutáveis da fila existente forem os mesmos; `set-queue-attributes` aplica ou atualiza visibility timeout e redrive. Repita o provisionamento se as filas forem removidas. Para parar: `docker compose stop localstack`.
 
-- `.env.example` documenta `PORT`, variáveis `POSTGRES_*`, `LOCALSTACK_AUTH_TOKEN`, `LOCALSTACK_PORT`, `LOCALSTACK_ENDPOINT`, nomes das filas, `OUTBOX_MAX_ATTEMPTS` (padrão 5) e a URL opcional do banco dedicado de testes de integração. Credenciais de exemplo destinam-se exclusivamente ao ambiente local.
+- `.env.example` documenta `PORT`, variáveis `POSTGRES_*`, `LOCALSTACK_AUTH_TOKEN`, `LOCALSTACK_PORT`, `LOCALSTACK_ENDPOINT`, nomes das filas de comando e DLQ, `OUTBOX_MAX_ATTEMPTS` (padrão 5) e a URL opcional do banco dedicado de testes de integração. Credenciais de exemplo destinam-se exclusivamente ao ambiente local.
 - Os testes SQS existentes usam LocalStack real. Os testes PostgreSQL/SQS existentes requerem PostgreSQL e LocalStack ativos, além de `POSTGRES_TEST_DATABASE_URL` dedicado terminado em `_test` ou `-test`; não aponte essa variável para o banco de desenvolvimento.
 - Os testes de integração PostgreSQL usam `POSTGRES_TEST_DATABASE_URL`, exigem um nome de banco terminado em `_test` ou `-test`, aplicam as migrations e limpam as tabelas desse banco. Nunca apontar essa variável para o banco de desenvolvimento.
 - Para executar localmente, criar o banco `wagering_finances_test` para o usuário configurado no PostgreSQL, definir `POSTGRES_TEST_DATABASE_URL` apontando para ele e executar `bun run test:integration`. O comando compila a aplicação, aplica migrations, testa constraints e rollback transacional, e valida down/up de todas as migrations atuais.

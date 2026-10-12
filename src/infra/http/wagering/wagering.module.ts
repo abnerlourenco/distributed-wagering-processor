@@ -9,6 +9,7 @@ import { MikroOrmProcessWagerTransactionsRepository } from '../../database/mikro
 import { MikroOrmQueueWagerTransactionsRepository } from '../../database/mikro-orm/repositories/mikro-orm-queue-wager-transactions.repository.js';
 import { WageringTransactionsController } from '../controllers/wagering-transactions.controller.js';
 import { WagerTransactionQueriesController } from '../controllers/wager-transaction-queries.controller.js';
+import { MetricsRegistry } from '../../observability/metrics-registry.js';
 
 const PROCESS_WAGER_TRANSACTIONS_REPOSITORY = Symbol(
   'PROCESS_WAGER_TRANSACTIONS_REPOSITORY',
@@ -26,15 +27,15 @@ const WAGER_TRANSACTIONS_REPOSITORY = Symbol('WAGER_TRANSACTIONS_REPOSITORY');
   providers: [
     {
       provide: PROCESS_WAGER_TRANSACTIONS_REPOSITORY,
-      useFactory: (entityManager: EntityManager) =>
-        new MikroOrmProcessWagerTransactionsRepository(entityManager),
-      inject: [EntityManager],
+      useFactory: (entityManager: EntityManager, metrics: MetricsRegistry) =>
+        new MikroOrmProcessWagerTransactionsRepository(entityManager, metrics),
+      inject: [EntityManager, MetricsRegistry],
     },
     {
       provide: QUEUE_WAGER_TRANSACTIONS_REPOSITORY,
-      useFactory: (entityManager: EntityManager) =>
-        new MikroOrmQueueWagerTransactionsRepository(entityManager),
-      inject: [EntityManager],
+      useFactory: (entityManager: EntityManager, metrics: MetricsRegistry) =>
+        new MikroOrmQueueWagerTransactionsRepository(entityManager, metrics),
+      inject: [EntityManager, MetricsRegistry],
     },
     {
       provide: WAGER_TRANSACTIONS_REPOSITORY,
