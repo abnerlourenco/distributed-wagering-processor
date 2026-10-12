@@ -314,11 +314,112 @@ flowchart TD
     Worker --> DB
 ```
 
-## Testes
+## Testes e qualidade
 
 ```bash
+# Testes unitários
 bun run test
+
+# Testes de integração e end-to-end
 bun run test:e2e
+
+# Build
+bun run build
+
+# Lint
+bun run lint
+
+# Formatação
+bun run format
 ```
 
-Os testes de integração precisam de PostgreSQL e LocalStack. Configure `POSTGRES_TEST_DATABASE_URL` para um banco de testes dedicado, nunca para o banco de desenvolvimento.
+Os testes de integração utilizam PostgreSQL e LocalStack. Configure `POSTGRES_TEST_DATABASE_URL` para um banco dedicado cujo nome termine em `_test` ou `-test`.
+
+**Nunca aponte essa variável para um banco de desenvolvimento ou produção.**
+
+
+## Observabilidade
+
+### Logs estruturados
+
+A aplicação utiliza um logger estruturado que emite registros JSON para `stdout` e `stderr`, facilitando a coleta pelo Docker e por ferramentas de centralização de logs.
+
+Os registros podem incluir os seguintes campos:
+
+- `timestamp`, `level`, `context` e `message`;
+- `correlationId`, `messageId`, `transactionId`, `walletId` e `providerId`, quando disponíveis.
+
+O middleware HTTP aceita o header `x-correlation-id` quando ele atende ao formato permitido. Caso contrário, gera um UUID e devolve o identificador no header da resposta. O contexto de correlação também é propagado para os comandos enviados pela Outbox.
+
+**Segurança:** não registrar payloads financeiros completos, valores de apostas, saldos, credenciais, tokens ou dados sensíveis de mensagens. Utilize os identificadores de correlação para localizar operações durante uma investigação.
+
+Exemplo:
+
+```bash
+curl -H "x-correlation-id: support-case-123" http://localhost:3001/health/live
+```
+
+### Métricas
+
+O endpoint `GET /metrics` expõe métricas no formato de texto compatível com Prometheus.
+
+| Métrica | Finalidade |
+|---|---|
+| `wager_transactions{status="..."}` | Quantidade persistida de transações por status atual |
+| `wagering_duplicates_total{source="..."}` | Duplicatas idempotentes detectadas |
+| `wagering_retries_total{stage="..."}` | Tentativas de retry por etapa |
+| `wagering_dlq_messages{queue="..."}` | Profundidade aproximada da fila de mensagens mortas |
+| `wagering_lock_conflicts_total` | Conflitos de lock ou serialização no PostgreSQL |
+| `wagering_outbox_lag_seconds` | Idade do comando mais antigo aguardando publicação |
+| `wagering_transaction_processing_duration_seconds` | Distribuição da duração do processamento |
+
+O endpoint atualiza algumas métricas consultando o PostgreSQL e a DLQ. Portanto, a coleta também depende da disponibilidade dessas dependências.
+
+Não utilize IDs de transação, carteira ou correlação como labels das métricas. Esses valores possuem alta cardinalidade e devem permanecer nos logs.
+
+### Health checks
+
+- `GET /health/live`: indica que o processo HTTP está ativo, sem consultar dependências externas.
+- `GET /health/ready`: verifica PostgreSQL, fila de comandos e DLQ. Retorna `200 OK` quando todas estão acessíveis e `503 Service Unavailable` quando alguma dependência está indisponível.
+
+Liveness e readiness têm finalidades diferentes: uma instância pode continuar viva, mas não estar pronta para atender requisições.
+
+## Migrations
+
+O schema do PostgreSQL é gerenciado por migrations versionadas do MikroORM.
+
+```bash
+# Criar uma migration em branco
+bun run migration:create
+
+# Aplicar migrations pendentes
+bun run migration:up
+
+# Reverter a última migration
+bun run migration:down
+```
+
+Revise o SQL de cada migration antes de aplicá-la. As alterações precisam preservar as constraints financeiras e oferecer uma reversão coerente.
+
+O ledger é protegido contra alterações e exclusões por trigger no PostgreSQL. Não remova essa proteção para facilitar operações de manutenção.
+
+## Consistência financeira
+
+As garantias centrais são implementadas no domínio e no PostgreSQL:
+
+- Valores monetários são representados por strings decimais e pelo Value Object `Money`, sem cálculos financeiros com `number` de JavaScript.
+- A idempotência é persistida no banco e protegida por constraints de unicidade.
+- O processamento utiliza transações PostgreSQL e lock pessimista na carteira específica, permitindo concorrência entre carteiras diferentes.
+- Saldo, transação financeira, lançamento no ledger e eventos relacionados são persistidos atomicamente.
+- O ledger é append-only e protegido contra `UPDATE` e `DELETE` por trigger.
+- Inbox e Outbox permitem recuperação após falhas e reentregas sem depender exclusivamente da deduplicação FIFO do SQS.
+- A reconciliação compara o saldo armazenado com o calculado a partir do ledger, sem corrigir divergências silenciosamente.
+
+Consulte [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) para conhecer os detalhes das entidades, dos casos de uso e das decisões de persistência.
+
+## Próximas evoluções
+
+A prioridade é concluir e validar todos os requisitos obrigatórios do desafio, incluindo concorrência, idempotência, recuperação de falhas, testes de integração e observabilidade.
+
+OpenTelemetry para tracing distribuído e Keycloak para autenticação e autorização são evoluções planejadas. Não devem ser considerados implementados apenas por constarem neste roadmap.
+
