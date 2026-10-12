@@ -6,7 +6,7 @@ O projeto é uma aplicação distribuida para processar operações financeiras 
 
 ## Estado atual
 
-A fundação HTTP está baseada em NestJS e TypeScript estrito. O `AppModule` registra o `MikroOrmModule` com uma configuração PostgreSQL centralizada e o módulo `wallets`. O schema é mantido por migrations versionadas e não é sincronizado automaticamente.
+A fundação HTTP está baseada em NestJS e TypeScript estrito. O `AppModule` registra o `MikroOrmModule` com uma configuração PostgreSQL centralizada e os módulos `wallets`, `wagering` e `health`. O schema é mantido por migrations versionadas e não é sincronizado automaticamente.
 
 A aplicação segue a organização: `src/core` contém conceitos compartilhados, `src/domain` é dividido por contexto, `src/infra` concentra os adaptadores e a composição NestJS, e `./test` contém os testes end-to-end. Testes unitários ficam junto do código testado. Regras financeiras não dependem de NestJS, controllers ou MikroORM.
 
@@ -38,6 +38,12 @@ test/
 ```
 
 Value objects e abstrações genéricas ficam em `core`; regras específicas, como `Wallet`, ficam em `domain/wallets/enterprise`, enquanto casos de uso e contratos ficam em `domain/wallets/application`. Controllers, módulos NestJS, adaptadores do MikroORM e migrations pertencem a `infra`. Testes unitários ficam co-localizados como `*.spec.ts`; testes e2e ficam em `test/`.
+
+## Health checks
+
+- `GET /health/live` indica que o processo HTTP está ativo e não consulta dependências externas.
+- `GET /health/ready` verifica a conexão com PostgreSQL; retorna `200` com `status: ready` quando disponível ou `503` com `status: not_ready` quando indisponível. A resposta não expõe detalhes internos da falha.
+- As rotas de health check não exigem autenticação. Como SQS/LocalStack ainda não está integrado, readiness verifica somente PostgreSQL; a verificação de mensageria permanece pendente para a etapa de integração com SQS.
 
 ## Módulo Wallets
 

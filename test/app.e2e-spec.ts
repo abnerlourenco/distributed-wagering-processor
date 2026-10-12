@@ -23,6 +23,20 @@ describe('AppController (e2e)', () => {
       .expect('Hello World!');
   });
 
+  it('keeps liveness independent of database readiness', async () => {
+    await request(app.getHttpServer())
+      .get('/health/live')
+      .expect(200)
+      .expect({ status: 'alive' });
+  });
+
+  it('reports readiness after checking PostgreSQL', async () => {
+    await request(app.getHttpServer())
+      .get('/health/ready')
+      .expect(200)
+      .expect({ status: 'ready', checks: { database: 'up' } });
+  });
+
   afterEach(async () => {
     await app.close();
   });
