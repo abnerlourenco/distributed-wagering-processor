@@ -1290,7 +1290,7 @@ describe('Wager commands through PostgreSQL and LocalStack', () => {
 
     }
   });
-  
+
   it('does not refund the same BET twice under concurrent requests', async () => {
     const playerId = randomUUID();
     const providerId = 'concurrent-refund-provider';
@@ -1391,6 +1391,226 @@ describe('Wager commands through PostgreSQL and LocalStack', () => {
     );
 
     expect(refundRows).toEqual([{ count: 1, total: '10.00' }]);
+  });
+  
+  it('does not roll back the same BET twice under concurrent requests', async () => {
+    const playerId = randomUUID();
+    const providerId = 'concurrent-rollback-provider';
+
+    const { wallet } = await new OpenWalletUseCase(
+      new MikroOrmWalletsRepository(orm.em.fork({ clear: true })),
+    ).execute({
+      playerId,
+      initialBalance: Money.from({
+        amount: '100.00',
+        currency: 'BRL',
+      }),
+    });
+
+    const process = (request: {
+      providerId: string;
+      externalTransactionId: string;
+      idempotencyKey: string;
+      walletId: string;
+      playerId: string;
+      roundId: string;
+      gameId: string;
+      kind: WagerTransactionKind;
+      money: Money;
+      referenceExternalTransactionId?: string;
+    }) =>
+      new ProcessWagerTransactionUseCase(
+        new MikroOrmProcessWagerTransactionsRepository(
+          orm.em.fork({ clear: true }),
+        ),
+      ).execute(request);
+
+    const bet = {
+      providerId,
+      externalTransactionId: 'rollback-source-bet',
+      idempotencyKey: 'rollback-source-bet-key',
+      walletId: wallet.id,
+      playerId,
+      roundId: 'concurrent-rollback-round',
+      gameId: 'integration-game',
+      kind: WagerTransactionKind.Bet,
+      money: Money.from({ amount: '10.00', currency: 'BRL' }),
+    };
+
+    const betResult = await process(bet);
+    expect(betResult.transaction.status).toBe('PROCESSED');
+    expect(betResult.balance.toString()).toBe('90.00');
+
+    const rollbacks = Array.from({ length: 2 }, (_, index) => ({
+      ...bet,
+      externalTransactionId: `rollback-attempt-${index}`,
+      idempotencyKey: `rollback-attempt-key-${index}`,
+      kind: WagerTransactionKind.Rollback,
+      referenceExternalTransactionId: bet.externalTransactionId,
+    }));
+
+    const results = await Promise.allSettled(
+      rollbacks.map((rollback) => process(rollback)),
+    );
+
+    const processedRollbacks = results.filter(
+      (result) =>
+        result.status === 'fulfilled' &&
+        result.value.transaction.status === 'PROCESSED',
+    );
+
+    expect(processedRollbacks).toHaveLength(1);
+
+    const walletRows = await orm.em.getConnection().execute<
+      Array<{ balance: string }>
+    >(
+      'select "balance" from "wallets" where "id" = ?',
+      [wallet.id],
+    );
+
+    expect(walletRows).toEqual([{ balance: '100.00' }]);
+
+    const rollbackRows = await orm.em.getConnection().execute<
+      Array<{ count: number; total: string }>
+    >(
+      `select
+        count(*)::int as "count",
+        coalesce(sum("amount"), 0)::text as "total"
+      from "wallet_ledger_entries"
+      where "wallet_id" = ?
+        and "transaction_id" in (
+          select "id"
+          from "wager_transactions"
+          where "provider_id" = ?
+            and "kind" = 'ROLLBACK'
+            and "reference_external_transaction_id" = ?
+            and "status" = 'PROCESSED'
+        )`,
+      [wallet.id, providerId, bet.externalTransactionId],
+    );
+
+    expect(rollbackRows).toEqual([{ count: 1, total: '10.00' }]);
+  });
+  
+  it('preserves idempotency across three independent database connections', async () => {
+    const playerId = randomUUID();
+    const providerId = 'three-connections-provider';
+    const externalTransactionId = 'three-connections-bet';
+    const idempotencyKey = 'three-connections-key';
+
+    const { wallet } = await new OpenWalletUseCase(
+      new MikroOrmWalletsRepository(orm.em.fork({ clear: true })),
+    ).execute({
+      playerId,
+      initialBalance: Money.from({
+        amount: '100.00',
+        currency: 'BRL',
+      }),
+    });
+
+    const independentOrms: MikroORM[] = [];
+
+    try {
+      for (let index = 0; index < 3; index += 1) {
+        independentOrms.push(
+          await MikroORM.init({
+            ...mikroOrmConfig,
+            clientUrl: testDatabaseUrl,
+          }),
+        );
+      }
+
+      const request = {
+        providerId,
+        externalTransactionId,
+        idempotencyKey,
+        walletId: wallet.id,
+        playerId,
+        roundId: 'three-connections-round',
+        gameId: 'integration-game',
+        kind: WagerTransactionKind.Bet,
+        money: Money.from({
+          amount: '10.00',
+          currency: 'BRL',
+        }),
+      };
+
+      const results = await Promise.all(
+        Array.from({ length: 30 }, (_, index) => {
+          const independentOrm = independentOrms[index % 3];
+
+          if (!independentOrm) {
+            throw new Error('Independent ORM connection is unavailable');
+          }
+
+          return new ProcessWagerTransactionUseCase(
+            new MikroOrmProcessWagerTransactionsRepository(
+              independentOrm.em.fork({ clear: true }),
+            ),
+          ).execute(request);
+        }),
+      );
+
+      expect(
+        results.filter((result) => !result.idempotentReplay),
+      ).toHaveLength(1);
+
+      expect(
+        results.filter((result) => result.idempotentReplay),
+      ).toHaveLength(29);
+
+      expect(
+        results.every(
+          (result) => result.transaction.status === 'PROCESSED',
+        ),
+      ).toBe(true);
+
+      const walletRows = await orm.em.getConnection().execute<
+        Array<{ balance: string }>
+      >(
+        'select "balance" from "wallets" where "id" = ?',
+        [wallet.id],
+      );
+
+      expect(walletRows).toEqual([{ balance: '90.00' }]);
+
+      const transactionRows = await orm.em.getConnection().execute<
+        Array<{ count: number }>
+      >(
+        `select count(*)::int as "count"
+        from "wager_transactions"
+        where "provider_id" = ?
+          and "external_transaction_id" = ?`,
+        [providerId, externalTransactionId],
+      );
+
+      expect(transactionRows).toEqual([{ count: 1 }]);
+
+      const ledgerRows = await orm.em.getConnection().execute<
+        Array<{ count: number; total: string }>
+      >(
+        `select
+          count(*)::int as "count",
+          coalesce(sum("amount"), 0)::text as "total"
+        from "wallet_ledger_entries"
+        where "wallet_id" = ?
+          and "transaction_id" in (
+            select "id"
+            from "wager_transactions"
+            where "provider_id" = ?
+              and "external_transaction_id" = ?
+          )`,
+        [wallet.id, providerId, externalTransactionId],
+      );
+
+      expect(ledgerRows).toEqual([{ count: 1, total: '10.00' }]);
+    } finally {
+      await Promise.all(
+        independentOrms.map((independentOrm) =>
+          independentOrm.close(true),
+        ),
+      );
+    }
   });
   
   it('does not apply a wager twice when ACK fails after the database commit', async () => {
