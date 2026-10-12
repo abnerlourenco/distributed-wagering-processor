@@ -919,7 +919,7 @@
           "autoincrement": false,
           "primary": false,
           "nullable": true,
-          "unique": false,
+          "unique": true,
           "length": null,
           "precision": null,
           "scale": null,
@@ -1059,6 +1059,17 @@
           "keyName": "wager_transactions_provider_reference_external_id_index",
           "primary": false,
           "unique": false
+        },
+        {
+          "columnNames": [
+            "reference_transaction_id"
+          ],
+          "composite": false,
+          "constraint": false,
+          "keyName": "wager_transactions_refund_reference_unique",
+          "primary": false,
+          "unique": true,
+          "where": "((kind)::text = 'REFUND'::text) AND (reference_transaction_id IS NOT NULL)"
         },
         {
           "columnNames": [

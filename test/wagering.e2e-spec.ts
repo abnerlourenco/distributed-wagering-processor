@@ -54,6 +54,62 @@ class InMemoryProcessWagerTransactionsRepository
       return result;
     }
 
+    if (transaction.kind === WagerTransactionKind.Refund) {
+      const reference = [...this.transactions.values()].find(
+        ({ transaction: existing }) =>
+          existing.providerId === transaction.providerId &&
+          existing.externalTransactionId ===
+            transaction.referenceExternalTransactionId,
+      )?.transaction;
+      if (!reference) {
+        transaction.markPendingReference();
+        const result = {
+          transaction,
+          balance: Money.from({ amount: '975.00', currency: 'BRL' }),
+          idempotentReplay: false,
+        };
+        this.transactions.set(key, result);
+
+        return result;
+      }
+
+      const alreadyRefunded = [...this.transactions.values()].some(
+        ({ transaction: existing }) =>
+          existing.kind === WagerTransactionKind.Refund &&
+          existing.referenceExternalTransactionId ===
+            transaction.referenceExternalTransactionId &&
+          existing.status === 'PROCESSED',
+      );
+      if (
+        reference.kind !== WagerTransactionKind.Bet ||
+        reference.status !== 'PROCESSED' ||
+        reference.walletId !== transaction.walletId ||
+        reference.playerId !== transaction.playerId ||
+        reference.roundId !== transaction.roundId
+      ) {
+        transaction.reject('INVALID_REFERENCE');
+      } else if (!reference.money.equals(transaction.money)) {
+        transaction.reject('REFUND_AMOUNT_MISMATCH');
+      } else if (alreadyRefunded) {
+        transaction.reject('REFERENCE_ALREADY_REFUNDED');
+      } else {
+        transaction.markProcessed(reference.id, new Date());
+      }
+
+      const result = {
+        transaction,
+        balance: Money.from({
+          amount:
+            transaction.status === 'PROCESSED' ? '1000.00' : '975.00',
+          currency: 'BRL',
+        }),
+        idempotentReplay: false,
+      };
+      this.transactions.set(key, result);
+
+      return result;
+    }
+
     if (
       transaction.kind === WagerTransactionKind.Bet &&
       transaction.money.toString() === '50.00'
@@ -176,6 +232,12 @@ describe('Wagering transactions HTTP (e2e)', () => {
       .set('Idempotency-Key', 'provider-a:transaction-123')
       .send({ ...body, kind: 'ROLLBACK' })
       .expect(400);
+
+    await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', 'provider-a:refund-without-reference')
+      .send({ ...body, kind: 'REFUND' })
+      .expect(400);
   });
 
   it('processes WIN and LOSS and leaves referenced WIN pending when its BET is absent', async () => {
@@ -236,6 +298,128 @@ describe('Wagering transactions HTTP (e2e)', () => {
           status: 'PENDING_REFERENCE',
           balance: { amount: '975.00', currency: 'BRL' },
           idempotentReplay: false,
+        });
+      });
+  });
+
+  it('accepts REFUND and records a response for its BET reference', async () => {
+    const walletId = randomUUID();
+    const playerId = randomUUID();
+    const bet = {
+      providerId: 'provider-a',
+      externalTransactionId: 'refund-bet-123',
+      playerId,
+      walletId,
+      roundId: 'round-987',
+      gameId: 'fortune-chimp',
+      kind: 'BET',
+      money: { amount: '25.00', currency: 'BRL' },
+    };
+
+    await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', 'provider-a:refund-bet-123')
+      .send(bet)
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', 'provider-a:refund-123')
+      .send({
+        ...bet,
+        externalTransactionId: 'refund-123',
+        kind: 'REFUND',
+        referenceExternalTransactionId: 'refund-bet-123',
+      })
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body).toMatchObject({
+          status: 'PROCESSED',
+          balance: { amount: '1000.00', currency: 'BRL' },
+          idempotentReplay: false,
+        });
+      });
+  });
+
+  it('returns pending and rejection responses for unresolved or invalid REFUNDs', async () => {
+    const walletId = randomUUID();
+    const playerId = randomUUID();
+    const common = {
+      providerId: 'provider-a',
+      playerId,
+      walletId,
+      roundId: 'round-987',
+      gameId: 'fortune-chimp',
+      money: { amount: '25.00', currency: 'BRL' },
+    };
+
+    await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', 'provider-a:refund-pending-http')
+      .send({
+        ...common,
+        externalTransactionId: 'refund-pending-http',
+        kind: 'REFUND',
+        referenceExternalTransactionId: 'bet-not-yet-received',
+      })
+      .expect(202)
+      .expect(({ body }) => {
+        expect(body.status).toBe('PENDING_REFERENCE');
+      });
+
+    await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', 'provider-a:refund-bet-http')
+      .send({
+        ...common,
+        externalTransactionId: 'refund-bet-http',
+        kind: 'BET',
+      })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', 'provider-a:refund-mismatch-http')
+      .send({
+        ...common,
+        externalTransactionId: 'refund-mismatch-http',
+        kind: 'REFUND',
+        referenceExternalTransactionId: 'refund-bet-http',
+        money: { amount: '24.99', currency: 'BRL' },
+      })
+      .expect(422)
+      .expect(({ body }) => {
+        expect(body).toMatchObject({
+          status: 'REJECTED',
+          failureCode: 'REFUND_AMOUNT_MISMATCH',
+        });
+      });
+
+    await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', 'provider-a:refund-valid-http')
+      .send({
+        ...common,
+        externalTransactionId: 'refund-valid-http',
+        kind: 'REFUND',
+        referenceExternalTransactionId: 'refund-bet-http',
+      })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post('/wagering/transactions')
+      .set('Idempotency-Key', 'provider-a:refund-duplicate-http')
+      .send({
+        ...common,
+        externalTransactionId: 'refund-duplicate-http',
+        kind: 'REFUND',
+        referenceExternalTransactionId: 'refund-bet-http',
+      })
+      .expect(422)
+      .expect(({ body }) => {
+        expect(body).toMatchObject({
+          status: 'REJECTED',
+          failureCode: 'REFERENCE_ALREADY_REFUNDED',
         });
       });
   });

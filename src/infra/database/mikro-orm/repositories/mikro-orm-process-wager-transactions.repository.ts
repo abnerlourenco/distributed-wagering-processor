@@ -99,7 +99,8 @@ export class MikroOrmProcessWagerTransactionsRepository
         let referenceTransactionId: string | undefined;
         let rejected = false;
         const processedReference =
-          transaction.kind === WagerTransactionKind.Win &&
+          (transaction.kind === WagerTransactionKind.Win ||
+            transaction.kind === WagerTransactionKind.Refund) &&
           transaction.referenceExternalTransactionId
             ? await entityManager.findOne(WagerTransactionEntity, {
                 providerId: transaction.providerId,
@@ -136,6 +137,52 @@ export class MikroOrmProcessWagerTransactionsRepository
         }
 
         if (
+          transaction.kind === WagerTransactionKind.Refund &&
+          transaction.referenceExternalTransactionId
+        ) {
+          if (
+            !processedReference ||
+            processedReference.status === WagerTransactionStatus.Pending ||
+            processedReference.status === WagerTransactionStatus.PendingReference
+          ) {
+            transaction.markPendingReference();
+          } else if (
+            processedReference.status !== WagerTransactionStatus.Processed ||
+            processedReference.kind !== WagerTransactionKind.Bet ||
+            processedReference.walletId !== transaction.walletId ||
+            processedReference.playerId !== transaction.playerId ||
+            processedReference.providerId !== transaction.providerId ||
+            processedReference.roundId !== transaction.roundId ||
+            processedReference.currency !== transaction.money.currency
+          ) {
+            transaction.reject('INVALID_REFERENCE');
+            rejected = true;
+          } else if (
+            !Money.from({
+              amount: processedReference.amount,
+              currency: processedReference.currency,
+            }).equals(transaction.money)
+          ) {
+            transaction.reject('REFUND_AMOUNT_MISMATCH');
+            rejected = true;
+          } else {
+            const existingRefund = await entityManager.findOne(
+              WagerTransactionEntity,
+              {
+                kind: WagerTransactionKind.Refund,
+                referenceTransactionId: processedReference.id,
+              },
+            );
+            if (existingRefund) {
+              transaction.reject('REFERENCE_ALREADY_REFUNDED');
+              rejected = true;
+            } else {
+              referenceTransactionId = processedReference.id;
+            }
+          }
+        }
+
+        if (
           transaction.status !== WagerTransactionStatus.PendingReference &&
           transaction.status !== WagerTransactionStatus.Rejected
         ) {
@@ -151,7 +198,10 @@ export class MikroOrmProcessWagerTransactionsRepository
               transaction.reject('INSUFFICIENT_FUNDS');
               rejected = true;
             }
-          } else if (transaction.kind === WagerTransactionKind.Win) {
+          } else if (
+            transaction.kind === WagerTransactionKind.Win ||
+            transaction.kind === WagerTransactionKind.Refund
+          ) {
             wallet.credit(transaction.money);
           }
 
@@ -167,7 +217,10 @@ export class MikroOrmProcessWagerTransactionsRepository
                 balanceAfter: wallet.balance,
                 createdAt: processedAt,
               });
-            } else if (transaction.kind === WagerTransactionKind.Win) {
+            } else if (
+              transaction.kind === WagerTransactionKind.Win ||
+              transaction.kind === WagerTransactionKind.Refund
+            ) {
               ledgerEntry = WalletLedgerEntry.create({
                 walletId: wallet.id,
                 transactionId: transaction.id,
@@ -258,6 +311,15 @@ export class MikroOrmProcessWagerTransactionsRepository
 
       if (!existing) {
         throw error;
+      }
+
+      if (
+        transaction.kind === WagerTransactionKind.Refund &&
+        existing.kind === WagerTransactionKind.Refund &&
+        existing.referenceExternalTransactionId ===
+          transaction.referenceExternalTransactionId
+      ) {
+        throw new DomainError('The referenced BET has already been refunded');
       }
 
       return this.replay(existing, transaction);

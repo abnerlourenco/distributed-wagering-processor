@@ -57,9 +57,10 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 - Cada transação referencia uma carteira existente. Referências a operações são opcionais até resolução, salvo a exigência de `reference_external_transaction_id` para `REFUND` e `ROLLBACK`; a referência interna usa FK para `wager_transactions`.
 - Tipo, status, moeda, valor positivo e timestamp de processamento são protegidos por constraints. Valor é `NUMERIC(20,2)` e moeda permanece explícita.
 - `SubmitWagerTransactionUseCase` persiste novas operações como `PENDING`; replay da mesma chave e hash retorna o registro original, enquanto conflito de hash ou duplicidade do identificador externo é rejeitado.
-- `POST /wagering/transactions` nesta etapa aceita `BET`, `WIN` e `LOSS`. Exige `Idempotency-Key`; `ProcessWagerTransactionUseCase` cria um hash SHA-256 do conteúdo de negócio e envia a operação ao repositório transacional.
-- `MikroOrmProcessWagerTransactionsRepository` adquire `SELECT ... FOR UPDATE` na carteira e valida jogador/moeda. `BET` debita e grava `DEBIT`; `WIN` credita e grava `CREDIT`; ambas persistem saldo, versão, transação e ledger atomicamente. `LOSS` é processada sem mudar saldo/versão e sem ledger.
+- `POST /wagering/transactions` aceita `BET`, `WIN`, `LOSS` e `REFUND`. Exige `Idempotency-Key`; `ProcessWagerTransactionUseCase` cria um hash SHA-256 do conteúdo de negócio e envia a operação ao repositório transacional.
+- `MikroOrmProcessWagerTransactionsRepository` adquire `SELECT ... FOR UPDATE` na carteira e valida jogador/moeda. `BET` debita e grava `DEBIT`; `WIN` e `REFUND` creditam e gravam `CREDIT`; essas alterações persistem saldo, versão, transação e ledger atomicamente. `LOSS` é processada sem mudar saldo/versão e sem ledger.
 - `WIN` pode referenciar uma operação externa. A referência só é aceita se resolver para uma `BET` processada do mesmo provedor, jogador, carteira, moeda e rodada. Referência ausente ou ainda pendente deixa a operação em `PENDING_REFERENCE`, sem crédito, e responde `202`; referência terminal inválida é registrada como `REJECTED` com `INVALID_REFERENCE` e responde `422`. A recuperação posterior dessas pendências permanece para etapa futura.
+- `REFUND` exige referência a uma `BET` processada do mesmo provedor, jogador, carteira, moeda e rodada, e o valor deve ser idêntico ao da aposta. Cada aposta pode ser reembolsada uma única vez, protegida por lock da carteira e índice único parcial em `reference_transaction_id`. Referência ausente/pendente resulta em `PENDING_REFERENCE`; referência incompatível, valor diferente ou aposta já reembolsada ficam auditáveis como `REJECTED` com códigos específicos e HTTP `422`. A recuperação posterior de pendências permanece para etapa futura.
 - Saldo insuficiente em `BET` é persistido como `REJECTED` com `failureCode: INSUFFICIENT_FUNDS`, preserva saldo/versão e não cria ledger. Operação processada retorna `200`; conflito de idempotência ou ID externo retorna `409`, carteira ausente/incompatível `404`, e payload inválido `400`.
 - `resulting_balance` guarda o saldo observado ao concluir, rejeitar ou deixar pendente a transação para que replays idempotentes devolvam o resultado original mesmo após operações posteriores na carteira.
 
@@ -69,7 +70,7 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 - `DEBIT` e `CREDIT` armazenam valor e saldos anterior/posterior como `NUMERIC(20,2)`. A factory valida moeda, valor positivo, saldo não negativo e igualdade aritmética entre direção, valor e saldos.
 - A tabela `wallet_ledger_entries` tem FKs compostas para garantir que carteira, transação e moeda correspondam, além de constraints SQL para direção, saldo e aritmética do lançamento.
 - Correções devem ocorrer por novos lançamentos compensatórios, nunca por alteração ou exclusão dos existentes.
-- No processamento de `BET` e `WIN`, inserir lançamento, atualizar carteira e marcar a transação como processada ocorre na mesma transação PostgreSQL. `LOSS` não altera saldo nem gera lançamento; `REFUND` e `ROLLBACK` ainda não são processados pela API.
+- No processamento de `BET`, `WIN` e `REFUND`, inserir lançamento, atualizar carteira e marcar a transação como processada ocorre na mesma transação PostgreSQL. `LOSS` não altera saldo nem gera lançamento; `ROLLBACK` ainda não é processado pela API.
 
 ## Inbox e Outbox
 

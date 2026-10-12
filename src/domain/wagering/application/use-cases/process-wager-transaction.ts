@@ -14,7 +14,11 @@ export interface ProcessWagerTransactionRequest {
   playerId: string;
   roundId: string;
   gameId: string;
-  kind: WagerTransactionKind.Bet | WagerTransactionKind.Win | WagerTransactionKind.Loss;
+  kind:
+    | WagerTransactionKind.Bet
+    | WagerTransactionKind.Win
+    | WagerTransactionKind.Loss
+    | WagerTransactionKind.Refund;
   money: Money;
   referenceExternalTransactionId?: string;
 }

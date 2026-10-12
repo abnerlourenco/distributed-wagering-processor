@@ -27,6 +27,7 @@ const submitWagerTransactionBodySchema = z
       WagerTransactionKind.Bet,
       WagerTransactionKind.Win,
       WagerTransactionKind.Loss,
+      WagerTransactionKind.Refund,
     ]),
     money: z.object({
       amount: z.string().regex(/^\d{1,18}\.\d{2}$/),
@@ -34,7 +35,31 @@ const submitWagerTransactionBodySchema = z
     }).strict(),
     referenceExternalTransactionId: z.string().trim().min(1).max(255).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((request, context) => {
+    if (
+      request.kind === WagerTransactionKind.Refund &&
+      !request.referenceExternalTransactionId
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['referenceExternalTransactionId'],
+        message: 'REFUND requires a referenced external transaction id',
+      });
+    }
+
+    if (
+      request.referenceExternalTransactionId &&
+      request.kind !== WagerTransactionKind.Win &&
+      request.kind !== WagerTransactionKind.Refund
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['referenceExternalTransactionId'],
+        message: 'This transaction kind does not accept a reference',
+      });
+    }
+  });
 
 const idempotencyKeySchema = z.string().trim().min(1).max(255);
 

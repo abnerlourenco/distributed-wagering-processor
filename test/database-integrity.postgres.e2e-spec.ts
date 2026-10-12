@@ -445,6 +445,164 @@ describe('PostgreSQL migrations and integrity constraints', () => {
     ).toEqual([{ count: 1 }]);
   });
 
+  it('refunds a processed BET exactly once and credits the amount atomically', async () => {
+    const wallet = await insertWallet({ balance: '75.00' });
+    const repository = new MikroOrmProcessWagerTransactionsRepository(
+      orm.em.fork({ clear: true }),
+    );
+    const bet = await new ProcessBetUseCase(repository).execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'refund-reference-bet',
+      idempotencyKey: 'provider-a:refund-reference-bet',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    });
+    const refundRequest = {
+      providerId: 'provider-a',
+      externalTransactionId: 'refund-reference-refund',
+      idempotencyKey: 'provider-a:refund-reference-refund',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      kind: WagerTransactionKind.Refund,
+      referenceExternalTransactionId: 'refund-reference-bet',
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    };
+    const refund = await new ProcessWagerTransactionUseCase(repository).execute(
+      refundRequest,
+    );
+
+    expect(refund.transaction.status).toBe('PROCESSED');
+    expect(refund.transaction.referenceTransactionId).toBe(bet.transaction.id);
+    expect(refund.balance.toString()).toBe('75.00');
+    expect(
+      await execute(
+        'select "balance", "version" from "wallets" where "id" = ?',
+        [wallet.id],
+      ),
+    ).toEqual([{ balance: '75.00', version: 3 }]);
+    expect(
+      await execute(
+        `select "direction", "amount", "balance_before", "balance_after"
+         from "wallet_ledger_entries" where "transaction_id" = ?`,
+        [refund.transaction.id],
+      ),
+    ).toEqual([
+      {
+        direction: 'CREDIT',
+        amount: '25.00',
+        balance_before: '50.00',
+        balance_after: '75.00',
+      },
+    ]);
+
+    const secondRefund = await new ProcessWagerTransactionUseCase(
+      repository,
+    ).execute({
+      ...refundRequest,
+      externalTransactionId: 'refund-reference-refund-2',
+      idempotencyKey: 'provider-a:refund-reference-refund-2',
+    });
+    expect(secondRefund.transaction.status).toBe('REJECTED');
+    expect(secondRefund.transaction.failureCode).toBe(
+      'REFERENCE_ALREADY_REFUNDED',
+    );
+    expect(secondRefund.balance.toString()).toBe('75.00');
+    expect(
+      await execute(
+        `select count(*)::int as "count"
+         from "wager_transactions"
+         where "kind" = 'REFUND'
+           and "reference_transaction_id" = ?`,
+        [bet.transaction.id],
+      ),
+    ).toEqual([{ count: 1 }]);
+    expect(
+      await execute(
+        'select count(*)::int as "count" from "wallet_ledger_entries" where "transaction_id" = ?',
+        [secondRefund.transaction.id],
+      ),
+    ).toEqual([{ count: 0 }]);
+  });
+
+  it('rejects a REFUND with a mismatched amount without changing the wallet', async () => {
+    const wallet = await insertWallet({ balance: '75.00' });
+    const repository = new MikroOrmProcessWagerTransactionsRepository(
+      orm.em.fork({ clear: true }),
+    );
+    await new ProcessBetUseCase(repository).execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'refund-amount-bet',
+      idempotencyKey: 'provider-a:refund-amount-bet',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    });
+    const refund = await new ProcessWagerTransactionUseCase(repository).execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'refund-amount-mismatch',
+      idempotencyKey: 'provider-a:refund-amount-mismatch',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      kind: WagerTransactionKind.Refund,
+      referenceExternalTransactionId: 'refund-amount-bet',
+      money: Money.from({ amount: '24.99', currency: 'BRL' }),
+    });
+
+    expect(refund.transaction.status).toBe('REJECTED');
+    expect(refund.transaction.failureCode).toBe('REFUND_AMOUNT_MISMATCH');
+    expect(refund.balance.toString()).toBe('50.00');
+    expect(
+      await execute(
+        'select "balance", "version" from "wallets" where "id" = ?',
+        [wallet.id],
+      ),
+    ).toEqual([{ balance: '50.00', version: 2 }]);
+  });
+
+  it('stores REFUND with an absent BET reference as pending without crediting', async () => {
+    const wallet = await insertWallet({ balance: '75.00' });
+    const result = await new ProcessWagerTransactionUseCase(
+      new MikroOrmProcessWagerTransactionsRepository(
+        orm.em.fork({ clear: true }),
+      ),
+    ).execute({
+      providerId: 'provider-a',
+      externalTransactionId: 'refund-pending-reference',
+      idempotencyKey: 'provider-a:refund-pending-reference',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-1',
+      gameId: 'game-1',
+      kind: WagerTransactionKind.Refund,
+      referenceExternalTransactionId: 'missing-refund-bet',
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    });
+
+    expect(result.transaction.status).toBe('PENDING_REFERENCE');
+    expect(result.balance.toString()).toBe('75.00');
+    expect(
+      await execute(
+        'select "balance", "version" from "wallets" where "id" = ?',
+        [wallet.id],
+      ),
+    ).toEqual([{ balance: '75.00', version: 1 }]);
+    expect(
+      await execute(
+        'select count(*)::int as "count" from "wallet_ledger_entries" where "wallet_id" = ?',
+        [wallet.id],
+      ),
+    ).toEqual([{ count: 0 }]);
+  });
+
   it('audits an insufficient-funds BET without changing the wallet or ledger', async () => {
     const wallet = await insertWallet({ balance: '10.00' });
     const result = await new ProcessBetUseCase(
