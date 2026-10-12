@@ -31,6 +31,13 @@ class InMemoryWagerTransactionsRepository implements WagerTransactionsRepository
     return null;
   }
 
+  async findById(transactionId: string): Promise<WagerTransaction | null> {
+    return (
+      this.transactions.find((transaction) => transaction.id === transactionId) ??
+      null
+    );
+  }
+
   async findByProviderAndIdempotencyKey(
     providerId: string,
     idempotencyKey: string,

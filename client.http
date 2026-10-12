@@ -21,6 +21,10 @@ Accept: application/json
 GET {{baseUrl}}/wallets/{{createWallet.response.body.$.id}}/ledger?limit=50
 Accept: application/json
 
+### Reconcile wallet balance with the ledger
+POST {{baseUrl}}/wallets/{{createWallet.response.body.$.id}}/reconciliation
+Accept: application/json
+
 ### Submit a BET
 # @name submitBet
 POST {{baseUrl}}/wagering/transactions
@@ -119,3 +123,11 @@ Content-Type: application/json
     "currency": "BRL"
   }
 }
+
+### Get transaction by internal ID
+GET {{baseUrl}}/wagering/transactions/{{submitBet.response.body.$.transactionId}}
+Accept: application/json
+
+### Get transaction by provider and external ID
+GET {{baseUrl}}/providers/provider-a/wagering/transactions/transaction-123
+Accept: application/json

@@ -81,6 +81,14 @@ export class MikroOrmWagerTransactionsRepository implements WagerTransactionsRep
     return entity ? MikroOrmWagerTransactionsRepository.toDomain(entity) : null;
   }
 
+  async findById(transactionId: string): Promise<WagerTransaction | null> {
+    const entity = await this.entityManager
+      .fork({ clear: true })
+      .findOne(WagerTransactionEntity, { id: transactionId });
+
+    return entity ? MikroOrmWagerTransactionsRepository.toDomain(entity) : null;
+  }
+
   async findByProviderAndExternalTransactionId(
     providerId: string,
     externalTransactionId: string,
@@ -112,6 +120,12 @@ export class MikroOrmWagerTransactionsRepository implements WagerTransactionsRep
       referenceTransactionId: entity.referenceTransactionId,
       failureCode: entity.failureCode,
       processedAt: entity.processedAt,
+      resultingBalance: entity.resultingBalance
+        ? Money.from({
+            amount: entity.resultingBalance,
+            currency: entity.currency,
+          })
+        : undefined,
     };
 
     return WagerTransaction.rehydrate(state);

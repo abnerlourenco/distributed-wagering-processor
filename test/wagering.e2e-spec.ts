@@ -9,6 +9,8 @@ import type {
   ProcessWagerTransactionResult,
   ProcessWagerTransactionsRepository,
 } from '../src/domain/wagering/application/repositories/process-wager-transactions-repository.js';
+import type { WagerTransactionQueriesRepository } from '../src/domain/wagering/application/repositories/wager-transaction-queries-repository.js';
+import { GetWagerTransactionUseCase } from '../src/domain/wagering/application/use-cases/get-wager-transaction.js';
 import { ProcessWagerTransactionUseCase } from '../src/domain/wagering/application/use-cases/process-wager-transaction.js';
 import {
   WagerTransaction,
@@ -16,14 +18,36 @@ import {
 } from '../src/domain/wagering/enterprise/entities/wager-transaction.js';
 import { HttpExceptionFilter } from '../src/infra/http/filters/http-exception.filter.js';
 import { WageringTransactionsController } from '../src/infra/http/controllers/wagering-transactions.controller.js';
+import { WagerTransactionQueriesController } from '../src/infra/http/controllers/wager-transaction-queries.controller.js';
 
 class InMemoryProcessWagerTransactionsRepository
-  implements ProcessWagerTransactionsRepository
+  implements ProcessWagerTransactionsRepository, WagerTransactionQueriesRepository
 {
   private readonly transactions = new Map<
     string,
     ProcessWagerTransactionResult
   >();
+
+  async findById(transactionId: string): Promise<WagerTransaction | null> {
+    return (
+      [...this.transactions.values()].find(
+        ({ transaction }) => transaction.id === transactionId,
+      )?.transaction ?? null
+    );
+  }
+
+  async findByProviderAndExternalTransactionId(
+    providerId: string,
+    externalTransactionId: string,
+  ): Promise<WagerTransaction | null> {
+    return (
+      [...this.transactions.values()].find(
+        ({ transaction }) =>
+          transaction.providerId === providerId &&
+          transaction.externalTransactionId === externalTransactionId,
+      )?.transaction ?? null
+    );
+  }
 
   async process(
     transaction: WagerTransaction,
@@ -189,15 +213,23 @@ class InMemoryProcessWagerTransactionsRepository
 
 describe('Wagering transactions HTTP (e2e)', () => {
   let app: INestApplication<App>;
+  let repository: InMemoryProcessWagerTransactionsRepository;
 
   beforeAll(async () => {
-    const repository = new InMemoryProcessWagerTransactionsRepository();
+    repository = new InMemoryProcessWagerTransactionsRepository();
     const moduleFixture: TestingModule = await Test.createTestingModule({
-      controllers: [WageringTransactionsController],
+      controllers: [
+        WageringTransactionsController,
+        WagerTransactionQueriesController,
+      ],
       providers: [
         {
           provide: ProcessWagerTransactionUseCase,
           useFactory: () => new ProcessWagerTransactionUseCase(repository),
+        },
+        {
+          provide: GetWagerTransactionUseCase,
+          useFactory: () => new GetWagerTransactionUseCase(repository),
         },
       ],
     }).compile();
@@ -253,6 +285,41 @@ describe('Wagering transactions HTTP (e2e)', () => {
       .set('Idempotency-Key', 'provider-a:transaction-123')
       .send({ ...body, money: { amount: '26.00', currency: 'BRL' } })
       .expect(409);
+
+    await request(app.getHttpServer())
+      .get(`/wagering/transactions/${first.body.transactionId}`)
+      .expect(200)
+      .expect(({ body: found }) => {
+        expect(found).toMatchObject({
+          transactionId: first.body.transactionId,
+          providerId: 'provider-a',
+          externalTransactionId: 'transaction-123',
+          walletId,
+          playerId,
+          kind: 'BET',
+          status: 'PROCESSED',
+          money: { amount: '25.00', currency: 'BRL' },
+        });
+      });
+
+    await request(app.getHttpServer())
+      .get('/providers/provider-a/wagering/transactions/transaction-123')
+      .expect(200)
+      .expect(({ body: found }) => {
+        expect(found.transactionId).toBe(first.body.transactionId);
+      });
+  });
+
+  it('validates transaction lookup IDs and returns 404 for missing transactions', async () => {
+    await request(app.getHttpServer())
+      .get('/wagering/transactions/not-a-uuid')
+      .expect(400);
+    await request(app.getHttpServer())
+      .get(`/wagering/transactions/${randomUUID()}`)
+      .expect(404);
+    await request(app.getHttpServer())
+      .get('/providers/provider-a/wagering/transactions/not-found')
+      .expect(404);
   });
 
   it('requires an idempotency key and rejects unsupported transaction kinds', async () => {

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { MikroORM } from '@mikro-orm/postgresql';
 import { Money } from '../src/core/domain/money.js';
 import { OpenWalletUseCase } from '../src/domain/wallets/application/use-cases/open-wallet.js';
+import { ReconcileWalletUseCase } from '../src/domain/wallets/application/use-cases/reconcile-wallet.js';
 import {
   LedgerDirection,
   WalletLedgerEntry,
@@ -14,7 +15,9 @@ import {
 import { mikroOrmConfig } from '../src/infra/database/mikro-orm.config.js';
 import { MikroOrmWalletLedgerEntriesRepository } from '../src/infra/database/mikro-orm/repositories/mikro-orm-wallet-ledger-entries.repository.js';
 import { MikroOrmProcessWagerTransactionsRepository } from '../src/infra/database/mikro-orm/repositories/mikro-orm-process-wager-transactions.repository.js';
+import { MikroOrmWagerTransactionsRepository } from '../src/infra/database/mikro-orm/repositories/mikro-orm-wager-transactions.repository.js';
 import { MikroOrmWalletsRepository } from '../src/infra/database/mikro-orm/repositories/mikro-orm-wallets.repository.js';
+import { MikroOrmWalletReconciliationRepository } from '../src/infra/database/mikro-orm/repositories/mikro-orm-wallet-reconciliation.repository.js';
 import { ProcessBetUseCase } from '../src/domain/wagering/application/use-cases/process-bet.js';
 import { ProcessWagerTransactionUseCase } from '../src/domain/wagering/application/use-cases/process-wager-transaction.js';
 import { IdempotencyConflictError } from '../src/domain/wagering/application/errors/idempotency-conflict-error.js';
@@ -995,6 +998,7 @@ describe('PostgreSQL migrations and integrity constraints', () => {
       idempotencyKey: 'provider-a:bet-next-1',
       money: Money.from({ amount: '10.00', currency: 'BRL' }),
     });
+
     const replay = await useCase.execute(request);
 
     expect(replay.idempotentReplay).toBe(true);
@@ -1012,6 +1016,39 @@ describe('PostgreSQL migrations and integrity constraints', () => {
         [wallet.id],
       ),
     ).toEqual([{ balance: '65.00' }]);
+  });
+
+  it('loads wager transactions by internal ID and provider-scoped external identity', async () => {
+    const wallet = await insertWallet({ balance: '100.00' });
+    const transaction = await new ProcessBetUseCase(
+      new MikroOrmProcessWagerTransactionsRepository(
+        orm.em.fork({ clear: true }),
+      ),
+    ).execute({
+      providerId: 'provider-query',
+      externalTransactionId: 'query-bet-1',
+      idempotencyKey: 'provider-query:query-bet-1',
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: 'round-query',
+      gameId: 'game-query',
+      money: Money.from({ amount: '25.00', currency: 'BRL' }),
+    });
+    const repository = new MikroOrmWagerTransactionsRepository(
+      orm.em.fork({ clear: true }),
+    );
+
+    const byId = await repository.findById(transaction.transaction.id);
+    const byExternalIdentity =
+      await repository.findByProviderAndExternalTransactionId(
+        'provider-query',
+        'query-bet-1',
+      );
+
+    expect(byId?.id).toBe(transaction.transaction.id);
+    expect(byId?.resultingBalance?.toString()).toBe('75.00');
+    expect(byExternalIdentity?.id).toBe(transaction.transaction.id);
+    expect(byExternalIdentity?.status).toBe('PROCESSED');
   });
 
   it('serializes concurrent BETs competing for the same wallet balance', async () => {
@@ -1163,6 +1200,43 @@ describe('PostgreSQL migrations and integrity constraints', () => {
     )) as Array<{ transactions: string; entries: string }>;
 
     expect(Object.values(counts[0]).map(Number)).toEqual([0, 0]);
+  });
+
+  it('reconciles the stored balance with ledger totals and reports drift without correcting it', async () => {
+    const { wallet } = await new OpenWalletUseCase(
+      new MikroOrmWalletsRepository(orm.em.fork({ clear: true })),
+    ).execute({
+      playerId: randomUUID(),
+      initialBalance: Money.from({ amount: '100.00', currency: 'BRL' }),
+    });
+    const reconcile = new ReconcileWalletUseCase(
+      new MikroOrmWalletReconciliationRepository(orm.em.fork({ clear: true })),
+    );
+
+    const consistent = await reconcile.execute(wallet.id);
+    expect(consistent).toMatchObject({
+      walletId: wallet.id,
+      checkedEntries: 1,
+      consistent: true,
+    });
+    expect(consistent.difference.toString()).toBe('0.00');
+
+    await execute('update "wallets" set "balance" = ? where "id" = ?', [
+      '101.00',
+      wallet.id,
+    ]);
+    const drifted = await reconcile.execute(wallet.id);
+
+    expect(drifted.storedBalance.toString()).toBe('101.00');
+    expect(drifted.calculatedBalance.toString()).toBe('100.00');
+    expect(drifted.difference.toString()).toBe('-1.00');
+    expect(drifted.consistent).toBe(false);
+    expect(drifted.checkedEntries).toBe(1);
+    expect(
+      await execute('select "balance" from "wallets" where "id" = ?', [
+        wallet.id,
+      ]),
+    ).toEqual([{ balance: '101.00' }]);
   });
 
   it('rolls back a wallet and its OPENING transaction if the opening ledger entry fails', async () => {

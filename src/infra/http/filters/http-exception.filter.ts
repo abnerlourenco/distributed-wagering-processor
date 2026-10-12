@@ -10,6 +10,7 @@ import { WalletNotFoundError } from '../../../domain/wallets/application/errors/
 import { DomainError } from '../../../core/domain/domain-error.js';
 import { IdempotencyConflictError } from '../../../domain/wagering/application/errors/idempotency-conflict-error.js';
 import { WagerTransactionAlreadyExistsError } from '../../../domain/wagering/application/errors/wager-transaction-already-exists-error.js';
+import { WagerTransactionNotFoundError } from '../../../domain/wagering/application/errors/wager-transaction-not-found-error.js';
 
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
@@ -29,7 +30,10 @@ export class HttpExceptionFilter implements ExceptionFilter {
       return;
     }
 
-    if (exception instanceof WalletNotFoundError) {
+    if (
+      exception instanceof WalletNotFoundError ||
+      exception instanceof WagerTransactionNotFoundError
+    ) {
       response.status(404).json({ message: exception.message });
       return;
     }

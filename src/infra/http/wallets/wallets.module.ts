@@ -4,13 +4,18 @@ import { makeOpenWalletUseCase } from '../../../domain/wallets/application/facto
 import { GetWalletUseCase } from '../../../domain/wallets/application/use-cases/get-wallet.js';
 import { GetWalletLedgerUseCase } from '../../../domain/wallets/application/use-cases/get-wallet-ledger.js';
 import { OpenWalletUseCase } from '../../../domain/wallets/application/use-cases/open-wallet.js';
+import { ReconcileWalletUseCase } from '../../../domain/wallets/application/use-cases/reconcile-wallet.js';
 import { MikroOrmWalletLedgerEntriesRepository } from '../../database/mikro-orm/repositories/mikro-orm-wallet-ledger-entries.repository.js';
+import { MikroOrmWalletReconciliationRepository } from '../../database/mikro-orm/repositories/mikro-orm-wallet-reconciliation.repository.js';
 import { MikroOrmWalletsRepository } from '../../database/mikro-orm/repositories/mikro-orm-wallets.repository.js';
 import { WalletsController } from '../controllers/wallets.controller.js';
 
 const WALLETS_REPOSITORY = Symbol('WALLETS_REPOSITORY');
 const WALLET_LEDGER_ENTRIES_REPOSITORY = Symbol(
   'WALLET_LEDGER_ENTRIES_REPOSITORY',
+);
+const WALLET_RECONCILIATION_REPOSITORY = Symbol(
+  'WALLET_RECONCILIATION_REPOSITORY',
 );
 
 @Module({
@@ -28,6 +33,12 @@ const WALLET_LEDGER_ENTRIES_REPOSITORY = Symbol(
       inject: [EntityManager],
     },
     {
+      provide: WALLET_RECONCILIATION_REPOSITORY,
+      useFactory: (entityManager: EntityManager) =>
+        new MikroOrmWalletReconciliationRepository(entityManager),
+      inject: [EntityManager],
+    },
+    {
       provide: OpenWalletUseCase,
       useFactory: (walletsRepository: MikroOrmWalletsRepository) =>
         makeOpenWalletUseCase(walletsRepository),
@@ -38,6 +49,13 @@ const WALLET_LEDGER_ENTRIES_REPOSITORY = Symbol(
       useFactory: (walletsRepository: MikroOrmWalletsRepository) =>
         new GetWalletUseCase(walletsRepository),
       inject: [WALLETS_REPOSITORY],
+    },
+    {
+      provide: ReconcileWalletUseCase,
+      useFactory: (
+        repository: MikroOrmWalletReconciliationRepository,
+      ) => new ReconcileWalletUseCase(repository),
+      inject: [WALLET_RECONCILIATION_REPOSITORY],
     },
     {
       provide: GetWalletLedgerUseCase,

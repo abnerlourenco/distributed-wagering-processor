@@ -11,6 +11,8 @@ import type {
   WalletLedgerEntryPageItem,
 } from '../src/domain/wallets/application/repositories/wallet-ledger-entries-repository.js';
 import type { WalletOpeningLedger } from '../src/domain/wallets/application/repositories/wallets-repository.js';
+import type { WalletReconciliationRepository } from '../src/domain/wallets/application/repositories/wallet-reconciliation-repository.js';
+import { ReconcileWalletUseCase } from '../src/domain/wallets/application/use-cases/reconcile-wallet.js';
 import { OpenWalletUseCase } from '../src/domain/wallets/application/use-cases/open-wallet.js';
 import { GetWalletUseCase } from '../src/domain/wallets/application/use-cases/get-wallet.js';
 import { GetWalletLedgerUseCase } from '../src/domain/wallets/application/use-cases/get-wallet-ledger.js';
@@ -89,6 +91,36 @@ class InMemoryWalletLedgerEntriesRepository
   }
 }
 
+class InMemoryWalletReconciliationRepository
+  implements WalletReconciliationRepository
+{
+  constructor(private readonly walletsRepository: InMemoryWalletsRepository) {}
+
+  async reconcile(walletId: string) {
+    const wallet = await this.walletsRepository.findById(walletId);
+    if (!wallet) {
+      return null;
+    }
+
+    const entries = this.walletsRepository.ledgerEntries.filter(
+      (entry) => entry.walletId === walletId,
+    );
+    const calculatedBalance = entries.reduce(
+      (balance, entry) =>
+        entry.direction === LedgerDirection.Credit
+          ? balance.add(entry.money)
+          : balance.subtract(entry.money),
+      Money.zero(wallet.currency),
+    );
+
+    return {
+      storedBalance: wallet.balance,
+      calculatedBalance,
+      checkedEntries: entries.length,
+    };
+  }
+}
+
 describe('Wallets HTTP (e2e)', () => {
   let app: INestApplication<App>;
   let walletsRepository: InMemoryWalletsRepository;
@@ -113,6 +145,13 @@ describe('Wallets HTTP (e2e)', () => {
               walletsRepository,
               new InMemoryWalletLedgerEntriesRepository(walletsRepository),
             ),
+        },
+        {
+            provide: ReconcileWalletUseCase,
+            useFactory: () =>
+              new ReconcileWalletUseCase(
+                new InMemoryWalletReconciliationRepository(walletsRepository),
+              ),
         },
       ],
     }).compile();
@@ -181,6 +220,36 @@ describe('Wallets HTTP (e2e)', () => {
 
   it('returns 404 when the wallet does not exist', async () => {
     await request(app.getHttpServer()).get(`/wallets/${randomUUID()}`).expect(404);
+  });
+
+  it('reconciles the stored balance against immutable ledger entries', async () => {
+    const { wallet } = await new OpenWalletUseCase(walletsRepository).execute({
+      playerId: randomUUID(),
+      initialBalance: Money.from({ amount: '42.75', currency: 'BRL' }),
+    });
+
+    await request(app.getHttpServer())
+      .post(`/wallets/${wallet.id}/reconciliation`)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body).toMatchObject({
+          walletId: wallet.id,
+          storedBalance: { amount: '42.75', currency: 'BRL' },
+          calculatedBalance: { amount: '42.75', currency: 'BRL' },
+          difference: { amount: '0.00', currency: 'BRL' },
+          consistent: true,
+          checkedEntries: 1,
+        });
+      });
+  });
+
+  it('rejects invalid wallet IDs and returns 404 for missing wallets on reconciliation', async () => {
+    await request(app.getHttpServer())
+      .post('/wallets/not-a-uuid/reconciliation')
+      .expect(400);
+    await request(app.getHttpServer())
+      .post(`/wallets/${randomUUID()}/reconciliation`)
+      .expect(404);
   });
 
   it('rejects an invalid wallet UUID', async () => {

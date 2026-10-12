@@ -2,6 +2,7 @@ import type { WagerTransaction } from '../../enterprise/entities/wager-transacti
 
 export interface WagerTransactionsRepository {
   create(transaction: WagerTransaction): Promise<WagerTransaction | null>;
+  findById(transactionId: string): Promise<WagerTransaction | null>;
   findByProviderAndIdempotencyKey(
     providerId: string,
     idempotencyKey: string,

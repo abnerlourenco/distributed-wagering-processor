@@ -44,6 +44,7 @@ export interface WagerTransactionState
   referenceTransactionId?: string;
   failureCode?: string;
   processedAt?: Date;
+  resultingBalance?: Money;
 }
 
 export class WagerTransaction {
@@ -65,6 +66,7 @@ export class WagerTransaction {
     private _referenceTransactionId?: string,
     private _failureCode?: string,
     private _processedAt?: Date,
+    public readonly resultingBalance?: Money,
   ) {}
 
   static create(props: CreateWagerTransactionProps): WagerTransaction {
@@ -111,6 +113,10 @@ export class WagerTransaction {
       props.referenceExternalTransactionId,
       props.createdAt ?? new Date(),
       WagerTransactionStatus.Pending,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
     );
   }
 
@@ -133,6 +139,7 @@ export class WagerTransaction {
       state.referenceTransactionId,
       state.failureCode,
       state.processedAt,
+      state.resultingBalance,
     );
   }
 

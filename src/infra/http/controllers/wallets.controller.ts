@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   HttpCode,
+  Logger,
   Param,
   Post,
   Query,
@@ -15,6 +16,7 @@ import {
   MAX_WALLET_LEDGER_PAGE_SIZE,
 } from '../../../domain/wallets/application/use-cases/get-wallet-ledger.js';
 import { OpenWalletUseCase } from '../../../domain/wallets/application/use-cases/open-wallet.js';
+import { ReconcileWalletUseCase } from '../../../domain/wallets/application/use-cases/reconcile-wallet.js';
 
 const openWalletBodySchema = z.object({
   playerId: z.uuid(),
@@ -38,10 +40,13 @@ const walletLedgerQuerySchema = z
 
 @Controller('wallets')
 export class WalletsController {
+  private readonly logger = new Logger(WalletsController.name);
+
   constructor(
     private readonly openWallet: OpenWalletUseCase,
     private readonly getWallet: GetWalletUseCase,
     private readonly getWalletLedger: GetWalletLedgerUseCase,
+    private readonly reconcileWallet: ReconcileWalletUseCase,
   ) {}
 
   @Get(':walletId/ledger')
@@ -68,6 +73,28 @@ export class WalletsController {
         createdAt: entry.createdAt,
       })),
       nextCursor,
+    };
+  }
+
+  @Post(':walletId/reconciliation')
+  @HttpCode(200)
+  async reconcile(@Param('walletId') walletId: string) {
+    const id = z.uuid().parse(walletId);
+    const result = await this.reconcileWallet.execute(id);
+
+    if (!result.consistent) {
+      this.logger.warn(
+        `Wallet ledger reconciliation mismatch for wallet ${id} across ${result.checkedEntries} entries`,
+      );
+    }
+
+    return {
+      walletId: result.walletId,
+      storedBalance: result.storedBalance.toJSON(),
+      calculatedBalance: result.calculatedBalance.toJSON(),
+      difference: result.difference.toJSON(),
+      consistent: result.consistent,
+      checkedEntries: result.checkedEntries,
     };
   }
 
