@@ -5,6 +5,9 @@ import { env } from '../env.js';
 import { MikroOrmOutboxPublisherRepository } from './outbox/mikro-orm-outbox-publisher.repository.js';
 import { OutboxPublisher } from './outbox/outbox-publisher.js';
 import { OutboxPublisherWorker } from './outbox/outbox-publisher.worker.js';
+import { MikroOrmInboxConsumerRepository } from './inbox/mikro-orm-inbox-consumer.repository.js';
+import { OutboxEventConsumer } from './inbox/outbox-event-consumer.js';
+import { OutboxEventConsumerWorker } from './inbox/outbox-event-consumer.worker.js';
 import { SqsMessageAdapter } from './sqs/sqs-message-adapter.js';
 
 const SQS_CLIENT = Symbol('SQS_CLIENT');
@@ -43,6 +46,21 @@ const SQS_CLIENT = Symbol('SQS_CLIENT');
       inject: [MikroOrmOutboxPublisherRepository, SqsMessageAdapter],
     },
     OutboxPublisherWorker,
+    {
+      provide: MikroOrmInboxConsumerRepository,
+      useFactory: (entityManager: EntityManager) =>
+        new MikroOrmInboxConsumerRepository(entityManager),
+      inject: [EntityManager],
+    },
+    {
+      provide: OutboxEventConsumer,
+      useFactory: (
+        repository: MikroOrmInboxConsumerRepository,
+        sqs: SqsMessageAdapter,
+      ) => new OutboxEventConsumer(repository, sqs, env.LOCALSTACK_QUEUE_NAME),
+      inject: [MikroOrmInboxConsumerRepository, SqsMessageAdapter],
+    },
+    OutboxEventConsumerWorker,
   ],
 })
 export class MessagingModule {}

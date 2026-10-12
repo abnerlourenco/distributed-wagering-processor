@@ -41,12 +41,13 @@ export class SqsMessageAdapter {
 
   async receiveMessage(
     queueUrl: string,
+    waitTimeSeconds = 10,
   ): Promise<ReceivedSqsMessage | undefined> {
     const result = await this.client.send(
       new ReceiveMessageCommand({
         QueueUrl: queueUrl,
         MaxNumberOfMessages: 1,
-        WaitTimeSeconds: 10,
+        WaitTimeSeconds: waitTimeSeconds,
       }),
     );
     const message = result.Messages?.[0];
