@@ -20,5 +20,25 @@ services:
       retries: 10
       start_period: 5s
 
+  localstack:
+    image: localstack/localstack
+    container_name: distributed-wagering-localstack
+    restart: unless-stopped
+    environment:
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:?Configure LOCALSTACK_AUTH_TOKEN in .env}
+      SERVICES: sqs
+      DEFAULT_REGION: us-east-1
+      SQS_QUEUE_NAME: wagering-events
+    ports:
+      - "127.0.0.1:${LOCALSTACK_PORT:-4566}:4566"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl -fsS http://localhost:4566/_localstack/health >/dev/null
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
 volumes:
   postgres-data:

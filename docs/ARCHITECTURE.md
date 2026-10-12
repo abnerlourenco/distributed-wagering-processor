@@ -43,7 +43,7 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 
 - `GET /health/live` indica que o processo HTTP está ativo e não consulta dependências externas.
 - `GET /health/ready` verifica a conexão com PostgreSQL; retorna `200` com `status: ready` quando disponível ou `503` com `status: not_ready` quando indisponível. A resposta não expõe detalhes internos da falha.
-- As rotas de health check não exigem autenticação. Como SQS/LocalStack ainda não está integrado, readiness verifica somente PostgreSQL; a verificação de mensageria permanece pendente para a etapa de integração com SQS.
+- As rotas de health check não exigem autenticação. Mesmo com LocalStack disponível no ambiente local, a aplicação ainda não verifica SQS na readiness; isso será ligado ao adaptador na etapa de integração.
 
 ## Módulo Wallets
 
@@ -87,7 +87,7 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 - `outbox_messages` registra eventos de saída junto aos dados de negócio na mesma transação PostgreSQL. `deduplication_key`, quando informado, evita inserir novamente o mesmo evento lógico.
 - Ambas as tabelas guardam payload JSONB, estado, tentativas, data de disponibilidade e código de erro técnico; não devem armazenar stack traces, tokens ou segredos em `last_error_code`.
 - Índices parciais facilitam localizar mensagens disponíveis para processamento. Estados e timestamps de conclusão são protegidos por constraints.
-- Esta etapa cria somente o modelo persistente. Consumidores, publisher, política/backoff de retries e integração com SQS/LocalStack ficam para uma etapa posterior. Inserção de outbox só garante publicação futura quando realizada na mesma transação dos dados de negócio; entrega permanece potencialmente duplicada e consumidores devem ser idempotentes.
+- Inbox/Outbox ainda é somente modelo persistente. Publisher, consumidores e política/backoff de retries serão implementados nas etapas seguintes. Inserção de outbox só garante publicação futura quando realizada na mesma transação dos dados de negócio; entrega permanece potencialmente duplicada e consumidores devem ser idempotentes.
 
 ## Decisões tomadas
 
@@ -116,10 +116,11 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 
 ### Ambiente local
 
-- O Docker Compose sobe somente o PostgreSQL nesta fase.
-- O serviço usa a imagem `postgres:18-alpine`, volume nomeado persistente e health check com `pg_isready`.
-- A porta é publicada apenas em `127.0.0.1`, evitando exposição de rede desnecessária durante o desenvolvimento local.
-- `.env.example` documenta `PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_PORT`, `POSTGRES_HOST` e a URL opcional do banco dedicado de testes de integração. Credenciais de exemplo destinam-se exclusivamente ao ambiente local.
+- O Docker Compose sobe PostgreSQL e LocalStack com somente o serviço SQS habilitado.
+- PostgreSQL usa a imagem `postgres:18-alpine`, volume nomeado persistente e health check com `pg_isready`. A fila `wagering-events` deve ser criada manualmente no LocalStack após o serviço ficar pronto.
+- As portas dos serviços são publicadas apenas em `127.0.0.1`. LocalStack usa `4566` por padrão, configurável com `LOCALSTACK_PORT`, e exige `LOCALSTACK_AUTH_TOKEN` local obtido no portal LocalStack. O token não deve ser versionado.
+- Para subir apenas o SQS: configurar `LOCALSTACK_AUTH_TOKEN` no `.env` local e executar `docker compose up -d localstack`. Conferir readiness com `docker compose ps localstack`, criar a fila com `docker compose exec localstack awslocal sqs create-queue --queue-name wagering-events` e verificar com `docker compose exec localstack awslocal sqs get-queue-url --queue-name wagering-events`. A criação deve ser repetida se a fila deixar de existir. Para parar: `docker compose stop localstack`.
+- `.env.example` documenta `PORT`, as variáveis `POSTGRES_*`, `LOCALSTACK_AUTH_TOKEN`, `LOCALSTACK_PORT` e a URL opcional do banco dedicado de testes de integração. Credenciais de exemplo destinam-se exclusivamente ao ambiente local.
 - Os testes de integração PostgreSQL usam `POSTGRES_TEST_DATABASE_URL`, exigem um nome de banco terminado em `_test` ou `-test`, aplicam as migrations e limpam as tabelas desse banco. Nunca apontar essa variável para o banco de desenvolvimento.
 - Para executar localmente, criar o banco `wagering_finances_test` para o usuário configurado no PostgreSQL, definir `POSTGRES_TEST_DATABASE_URL` apontando para ele e executar `bun run test:integration`. O comando compila a aplicação, aplica migrations, testa constraints e rollback transacional, e valida down/up de todas as migrations atuais.
 
@@ -146,4 +147,4 @@ A aplicação deve falhar no boot quando as configurações obrigatórias forem 
 
 ## Fora de escopo por enquanto
 
-As tabelas e entidades de Inbox/Outbox já estão definidas, mas ainda não participam do fluxo financeiro. A integração do processamento com Inbox/Outbox e a entrega por SQS/LocalStack continuam pendentes até a consolidação da atomicidade financeira e dos testes de concorrência com PostgreSQL real. Keycloak e OpenTelemetry também permanecem adiados.
+As tabelas e entidades de Inbox/Outbox já estão definidas, mas ainda não participam do fluxo financeiro. LocalStack e a fila SQS padrão `wagering-events` estão disponíveis no ambiente local; integração do fluxo financeiro com Outbox/Inbox, publisher/consumer e recuperação continuam pendentes. Keycloak e OpenTelemetry também permanecem adiados.
