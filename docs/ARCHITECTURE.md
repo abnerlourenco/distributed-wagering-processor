@@ -87,7 +87,7 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 - `outbox_messages` registra eventos de saída junto aos dados de negócio na mesma transação PostgreSQL. `deduplication_key`, quando informado, evita inserir novamente o mesmo evento lógico.
 - Ambas as tabelas guardam payload JSONB, estado, tentativas, data de disponibilidade e código de erro técnico; não devem armazenar stack traces, tokens ou segredos em `last_error_code`.
 - Índices parciais facilitam localizar mensagens disponíveis para processamento. Estados e timestamps de conclusão são protegidos por constraints.
-- Inbox/Outbox ainda é somente modelo persistente. Publisher, consumidores e política/backoff de retries serão implementados nas etapas seguintes. Inserção de outbox só garante publicação futura quando realizada na mesma transação dos dados de negócio; entrega permanece potencialmente duplicada e consumidores devem ser idempotentes.
+- Inbox/Outbox ainda é somente modelo persistente. O adaptador SQS envia, recebe e remove mensagens, mas publisher, consumidores e política/backoff de retries serão implementados nas etapas seguintes. Inserção de outbox só garante publicação futura quando realizada na mesma transação dos dados de negócio; entrega permanece potencialmente duplicada e consumidores devem ser idempotentes.
 
 ## Decisões tomadas
 
@@ -120,7 +120,8 @@ Value objects e abstrações genéricas ficam em `core`; regras específicas, co
 - PostgreSQL usa a imagem `postgres:18-alpine`, volume nomeado persistente e health check com `pg_isready`. A fila `wagering-events` deve ser criada manualmente no LocalStack após o serviço ficar pronto.
 - As portas dos serviços são publicadas apenas em `127.0.0.1`. LocalStack usa `4566` por padrão, configurável com `LOCALSTACK_PORT`, e exige `LOCALSTACK_AUTH_TOKEN` local obtido no portal LocalStack. O token não deve ser versionado.
 - Para subir apenas o SQS: configurar `LOCALSTACK_AUTH_TOKEN` no `.env` local e executar `docker compose up -d localstack`. Conferir readiness com `docker compose ps localstack`, criar a fila com `docker compose exec localstack awslocal sqs create-queue --queue-name wagering-events` e verificar com `docker compose exec localstack awslocal sqs get-queue-url --queue-name wagering-events`. A criação deve ser repetida se a fila deixar de existir. Para parar: `docker compose stop localstack`.
-- `.env.example` documenta `PORT`, as variáveis `POSTGRES_*`, `LOCALSTACK_AUTH_TOKEN`, `LOCALSTACK_PORT` e a URL opcional do banco dedicado de testes de integração. Credenciais de exemplo destinam-se exclusivamente ao ambiente local.
+- `.env.example` documenta `PORT`, as variáveis `POSTGRES_*`, `LOCALSTACK_AUTH_TOKEN`, `LOCALSTACK_PORT`, `LOCALSTACK_ENDPOINT` e a URL opcional do banco dedicado de testes de integração. Credenciais de exemplo destinam-se exclusivamente ao ambiente local.
+- `bun run test:sqs:integration` executa um teste contra LocalStack real; ele cria e remove uma fila temporária isolada para testar envio, recebimento e exclusão de mensagem, sem alterar a fila manual `wagering-events`.
 - Os testes de integração PostgreSQL usam `POSTGRES_TEST_DATABASE_URL`, exigem um nome de banco terminado em `_test` ou `-test`, aplicam as migrations e limpam as tabelas desse banco. Nunca apontar essa variável para o banco de desenvolvimento.
 - Para executar localmente, criar o banco `wagering_finances_test` para o usuário configurado no PostgreSQL, definir `POSTGRES_TEST_DATABASE_URL` apontando para ele e executar `bun run test:integration`. O comando compila a aplicação, aplica migrations, testa constraints e rollback transacional, e valida down/up de todas as migrations atuais.
 
@@ -147,4 +148,4 @@ A aplicação deve falhar no boot quando as configurações obrigatórias forem 
 
 ## Fora de escopo por enquanto
 
-As tabelas e entidades de Inbox/Outbox já estão definidas, mas ainda não participam do fluxo financeiro. LocalStack e a fila SQS padrão `wagering-events` estão disponíveis no ambiente local; integração do fluxo financeiro com Outbox/Inbox, publisher/consumer e recuperação continuam pendentes. Keycloak e OpenTelemetry também permanecem adiados.
+As tabelas e entidades de Inbox/Outbox já estão definidas, mas ainda não participam do fluxo financeiro. LocalStack, a fila SQS padrão `wagering-events` e o adaptador de mensagens estão disponíveis; integração do fluxo financeiro com Outbox/Inbox, publisher/consumer e recuperação continuam pendentes. Keycloak e OpenTelemetry também permanecem adiados.
